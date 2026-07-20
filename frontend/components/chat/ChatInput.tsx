@@ -9,9 +9,10 @@ interface ChatInputProps {
   onStop?: () => void;
   disabled?: boolean;
   isStreaming?: boolean;
+  isLoading?: boolean;
 }
 
-export function ChatInput({ onSend, onStop, disabled, isStreaming }: ChatInputProps) {
+export function ChatInput({ onSend, onStop, disabled, isStreaming, isLoading }: ChatInputProps) {
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -25,13 +26,13 @@ export function ChatInput({ onSend, onStop, disabled, isStreaming }: ChatInputPr
 
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
-    if (!trimmed || disabled) return;
+    if (!trimmed) return;
     onSend(trimmed);
     setValue("");
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
-  }, [value, disabled, onSend]);
+  }, [value, onSend]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -56,7 +57,7 @@ export function ChatInput({ onSend, onStop, disabled, isStreaming }: ChatInputPr
           style={{ height: "44px" }}
           className="w-full resize-none bg-transparent px-4 py-3 text-sm text-foreground placeholder:text-foreground-muted outline-none overflow-y-auto"
         />
-        {isStreaming ? (
+        {isStreaming || isLoading ? (
           <button
             onClick={onStop}
             className="mb-2 mr-2 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-foreground/10 text-foreground hover:bg-foreground/20 transition-colors"
@@ -67,10 +68,10 @@ export function ChatInput({ onSend, onStop, disabled, isStreaming }: ChatInputPr
         ) : (
           <button
             onClick={handleSend}
-            disabled={disabled || !value.trim()}
+            disabled={!value.trim()}
             className={cn(
               "mb-2 mr-2 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg transition-colors",
-              disabled || !value.trim()
+              !value.trim()
                 ? "text-foreground-muted cursor-not-allowed"
                 : "bg-primary text-primary-foreground hover:bg-primary-hover"
             )}

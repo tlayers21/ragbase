@@ -20,14 +20,16 @@ class QueryRewriter(dspy.Signature):
 
 
 class RAGAnswerer(dspy.Signature):
-    """Answer a question using the provided context chunks when available.
+    """Answer a question using context chunks when available.
     If no relevant context is provided, answer from your own knowledge.
-    Do not cite source document names inline in your answer."""
+    Never reference 'the context', 'provided examples', 'the text', or where information
+    came from. Do not cite source document names inline. Weave information naturally
+    into your answer as if already known."""
 
     question: str = dspy.InputField(desc="The user's question")
     context: str = dspy.InputField(desc="Retrieved context chunks")
     history: str = dspy.InputField(desc="Recent conversation history", default="")
-    answer: str = dspy.OutputField(desc="Concise answer without inline source citations")
+    answer: str = dspy.OutputField(desc="Concise answer without inline source citations or context references")
 
 
 class QueryRefinement(dspy.Signature):
@@ -281,9 +283,11 @@ def build_answer_prompt(question: str, context: str, history_str: str) -> str:
     """
     history_block = f"\nConversation history:\n{history_str}\n" if history_str else ""
     return (
-        "Answer the question using the provided context chunks when available. "
+        "Answer the question using the context below when available. "
         "If no relevant context is provided, answer from your own knowledge. "
-        "Do not cite source document names in your answer.\n"
+        "Do not cite source names or refer to 'the context', 'provided examples', "
+        "'the text', or any phrase that narrates where information came from. "
+        "Weave information naturally into your answer as if already known.\n"
         f"{history_block}\n"
         f"Context:\n{context}\n\n"
         f"Question: {question}\n\nAnswer:"

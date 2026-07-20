@@ -11,6 +11,7 @@ interface DropZoneProps {
 
 export function DropZone({ onDrop, isUploading }: DropZoneProps) {
   const [isDragging, setIsDragging] = useState(false);
+  const dragCounterRef = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleFiles = useCallback(
@@ -21,18 +22,30 @@ export function DropZone({ onDrop, isUploading }: DropZoneProps) {
     [onDrop]
   );
 
-  const handleDragOver = useCallback((e: React.DragEvent) => {
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current++;
     setIsDragging(true);
   }, []);
 
-  const handleDragLeave = useCallback(() => {
-    setIsDragging(false);
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current--;
+    if (dragCounterRef.current === 0) setIsDragging(false);
   }, []);
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
+      e.stopPropagation();
+      dragCounterRef.current = 0;
       setIsDragging(false);
       handleFiles(e.dataTransfer.files);
     },
@@ -41,6 +54,7 @@ export function DropZone({ onDrop, isUploading }: DropZoneProps) {
 
   return (
     <div
+      onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}

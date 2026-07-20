@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
   ingestFile,
+  ingestText as apiIngestText,
+  ingestUrl as apiIngestUrl,
   fetchIngestionStatus,
   cancelIngestion,
   clearCompletedJobs,
@@ -20,7 +22,6 @@ function hasActiveJobs(jobs: IngestionJob[]): boolean {
 // Dynamic poll interval: fast while queued so transitions feel immediate.
 function pollInterval(jobs: IngestionJob[]): number {
   if (jobs.some((j) => j.status === "queued")) return 1000;
-  if (jobs.some((j) => j.pages_total && j.pages_total > 100)) return 5000;
   if (jobs.some((j) => j.status === "ingesting")) return 2000;
   return 3000;
 }
@@ -137,13 +138,65 @@ export function useIngestion(onComplete?: () => void) {
   );
 
   const cancelJob = useCallback(async (jobId: string) => {
+    setJobs((prev) => prev.filter((j) => j.id !== jobId));
     try {
       await cancelIngestion(jobId);
-      setJobs((prev) => prev.map((j) => (j.id === jobId ? { ...j, status: "cancelled" } : j)));
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : "Cancel failed");
     }
   }, []);
+
+  const ingestText = useCallback(
+    async (text: string, sourceName: string) => {
+      setUploadError(null);
+      try {
+        const result = await apiIngestText(text, sourceName);
+        const newJob: IngestionJob = {
+          id: result.job_id,
+          filename: sourceName,
+          source: sourceName,
+          user_id: getUserId(),
+          suffix: ".txt",
+          status: result.status,
+        };
+        setJobs((prev) => {
+          const next = [...prev, newJob];
+          startPolling(next);
+          return next;
+        });
+      } catch (err) {
+        setUploadError(err instanceof Error ? err.message : "Ingest failed");
+        throw err;
+      }
+    },
+    [startPolling]
+  );
+
+  const ingestUrl = useCallback(
+    async (url: string) => {
+      setUploadError(null);
+      try {
+        const result = await apiIngestUrl(url);
+        const newJob: IngestionJob = {
+          id: result.job_id,
+          filename: result.source,
+          source: result.source,
+          user_id: getUserId(),
+          suffix: ".url",
+          status: result.status,
+        };
+        setJobs((prev) => {
+          const next = [...prev, newJob];
+          startPolling(next);
+          return next;
+        });
+      } catch (err) {
+        setUploadError(err instanceof Error ? err.message : "Ingest failed");
+        throw err;
+      }
+    },
+    [startPolling]
+  );
 
   const clearCompleted = useCallback(async () => {
     try {
@@ -173,6 +226,8 @@ export function useIngestion(onComplete?: () => void) {
     isUploading,
     uploadError,
     uploadFile,
+    ingestText,
+    ingestUrl,
     cancelJob,
     clearCompleted,
   };

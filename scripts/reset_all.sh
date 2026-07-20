@@ -55,7 +55,6 @@ redis-cli FLUSHALL 2>/dev/null && echo "Redis flushed" || echo "Redis not runnin
 # 5. Clear local state files
 echo "Clearing local state files..."
 echo '[]' > data/queue_status.json
-rm -f data/*_progress.json
 rm -f data/eval_set.json
 rm -f data/training_pairs.json
 rm -f models/reranker_model.pt

@@ -239,6 +239,39 @@ export async function clearCompletedJobs(): Promise<void> {
   if (!res.ok) throw new Error(`clearCompletedJobs: ${res.status}`);
 }
 
+export async function ingestText(
+  text: string,
+  sourceName: string
+): Promise<{ job_id: string; status: string }> {
+  const form = new FormData();
+  form.append("text", text);
+  form.append("source", sourceName);
+  form.append("user_id", getUserId());
+  const res = await fetch(`${getBaseUrl()}/ingest/text`, { method: "POST", body: form });
+  if (!res.ok) throw new Error(`ingestText: ${res.status}`);
+  return res.json();
+}
+
+export async function ingestUrl(
+  url: string
+): Promise<{ job_id: string; status: string; source: string }> {
+  const form = new FormData();
+  form.append("url", url);
+  form.append("user_id", getUserId());
+  const res = await fetch(`${getBaseUrl()}/ingest/url`, { method: "POST", body: form });
+  if (!res.ok) throw new Error(`ingestUrl: ${res.status}`);
+  return res.json();
+}
+
+export async function generateTitle(text: string): Promise<string> {
+  const form = new FormData();
+  form.append("text", text);
+  const res = await fetch(`${getBaseUrl()}/ingest/generate_title`, { method: "POST", body: form });
+  if (!res.ok) throw new Error(`generateTitle: ${res.status}`);
+  const data = await res.json();
+  return (data.title as string) ?? "";
+}
+
 export async function compactMessages(
   messages: { role: string; content: string }[],
   userId: string

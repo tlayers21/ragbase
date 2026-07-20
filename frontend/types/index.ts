@@ -31,8 +31,7 @@ export interface IngestionJob {
   suffix: string;
   status: string;
   tmp_path?: string;
-  pages_done?: number;
-  pages_total?: number;
+  estimated_seconds?: number;
 }
 
 export interface IngestionStatus {

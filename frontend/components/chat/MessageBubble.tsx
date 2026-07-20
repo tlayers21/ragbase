@@ -47,19 +47,7 @@ const STAGE_LABELS: Record<string, string> = {
   generating: "Generating answer…",
 };
 
-function CitationChip({ chunk, onClick }: { chunk: CitedChunk; onClick: () => void }) {
-  const label = chunk.source.length > 22 ? chunk.source.slice(0, 20) + "…" : chunk.source;
-  return (
-    <button
-      onClick={onClick}
-      className="inline-flex items-center rounded-full border border-border bg-surface px-2.5 py-0.5 text-[11px] text-foreground-muted hover:border-foreground-muted/40 hover:text-foreground transition-colors"
-    >
-      {label}
-    </button>
-  );
-}
-
-function ChunkModal({ chunk, onClose }: { chunk: CitedChunk; onClose: () => void }) {
+function ChunksModal({ chunks, onClose }: { chunks: CitedChunk[]; onClose: () => void }) {
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
@@ -67,27 +55,40 @@ function ChunkModal({ chunk, onClose }: { chunk: CitedChunk; onClose: () => void
     >
       <div className="absolute inset-0 bg-black/40" />
       <div
-        className="relative z-10 w-full max-w-lg rounded-xl border border-border bg-background shadow-xl"
+        className="relative z-10 w-full max-w-lg rounded-xl border border-border bg-background shadow-xl flex flex-col"
+        style={{ maxHeight: "80vh" }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-          <span className="text-sm font-medium text-foreground truncate pr-4">{chunk.source}</span>
-          <div className="flex items-center gap-3 flex-shrink-0">
-            <span className="text-xs tabular-nums text-foreground-muted/60">
-              {(chunk.score * 100).toFixed(0)}% match
-            </span>
-            <button
-              onClick={onClose}
-              className="rounded p-0.5 text-foreground-muted hover:text-foreground transition-colors"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
+        <div className="flex-shrink-0 flex items-center justify-between px-4 py-3 border-b border-border">
+          <span className="text-sm font-medium text-foreground">
+            Sources used ({chunks.length})
+          </span>
+          <button
+            onClick={onClose}
+            className="rounded p-0.5 text-foreground-muted hover:text-foreground transition-colors"
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
-        <div className="overflow-y-auto max-h-80 px-4 py-4">
-          <p className="text-sm text-foreground-muted leading-relaxed whitespace-pre-wrap">
-            {chunk.text}
-          </p>
+        <div className="flex-1 overflow-y-auto p-3 space-y-3">
+          {chunks.map((chunk, i) => (
+            <div key={i} className="rounded-lg border border-border bg-surface p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-medium text-foreground truncate">
+                  {chunk.source}
+                </span>
+                <span className="text-[10px] tabular-nums text-foreground-muted/60 flex-shrink-0">
+                  {(chunk.score * 100).toFixed(0)}% match
+                </span>
+              </div>
+              <p
+                className="text-sm text-foreground-muted leading-relaxed whitespace-pre-wrap overflow-y-auto"
+                style={{ maxHeight: "200px" }}
+              >
+                {chunk.text}
+              </p>
+            </div>
+          ))}
         </div>
       </div>
     </div>
@@ -138,7 +139,7 @@ interface MessageBubbleProps {
 export function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const [isHovered, setIsHovered] = useState(false);
-  const [openChunk, setOpenChunk] = useState<CitedChunk | null>(null);
+  const [showChunksModal, setShowChunksModal] = useState(false);
 
   if (message.role === "system" && message.type === "summary") {
     return <SummaryBlock message={message} />;
@@ -176,14 +177,10 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
   return (
     <div
-      className="flex items-start gap-3"
+      className="flex items-start gap-3 pl-2"
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
-      {/* Small avatar dot */}
-      <div className="h-6 w-6 flex-shrink-0 mt-0.5 rounded-full bg-foreground-muted/20 flex items-center justify-center">
-        <span className="text-[10px] font-semibold text-foreground-muted">R</span>
-      </div>
       <div className="flex-1 min-w-0 pb-1">
         {isStreamingEmpty ? (
           <ThinkingIndicator stage={message.stage} />
@@ -220,16 +217,17 @@ export function MessageBubble({ message }: MessageBubbleProps) {
             </div>
             {message.isComplete && message.chunks && message.chunks.length > 0 && (
               <div className="mt-3">
-                <p className="text-[10px] font-medium uppercase tracking-wide text-foreground-muted mb-1.5">
-                  Sources used
-                </p>
-                <div className="flex flex-wrap gap-1.5">
-                  {message.chunks.map((chunk, i) => (
-                    <CitationChip key={i} chunk={chunk} onClick={() => setOpenChunk(chunk)} />
-                  ))}
-                </div>
-                {openChunk && (
-                  <ChunkModal chunk={openChunk} onClose={() => setOpenChunk(null)} />
+                <button
+                  onClick={() => setShowChunksModal(true)}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-2.5 py-0.5 text-[11px] text-foreground-muted hover:border-foreground-muted/40 hover:text-foreground transition-colors"
+                >
+                  Sources used ({message.chunks.length})
+                </button>
+                {showChunksModal && (
+                  <ChunksModal
+                    chunks={message.chunks}
+                    onClose={() => setShowChunksModal(false)}
+                  />
                 )}
               </div>
             )}

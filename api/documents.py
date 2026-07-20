@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -32,7 +34,7 @@ class ChunkDetail(BaseModel):
 async def list_documents(user_id: str):
     """List all sources for a user with summary info."""
     collection = get_collection(user_id)
-    results = collection.get(include=["metadatas"])
+    results = await asyncio.to_thread(lambda: collection.get(include=["metadatas"]))
 
     # results["metadatas"] can be None when the collection is empty in some
     # ChromaDB versions. Guard against that and skip any malformed entries.
@@ -65,7 +67,9 @@ async def list_documents(user_id: str):
 async def get_document(source: str, user_id: str):
     """Get all chunks for a specific source."""
     collection = get_collection(user_id)
-    results = collection.get(where={"source": source}, include=["documents", "metadatas"])
+    results = await asyncio.to_thread(
+        lambda: collection.get(where={"source": source}, include=["documents", "metadatas"])
+    )
 
     if not results["ids"]:
         raise HTTPException(status_code=404, detail=f"Source '{source}' not found")
@@ -91,7 +95,7 @@ async def get_document(source: str, user_id: str):
 @router.delete("/{source}")
 async def delete_document(source: str, user_id: str):
     """Delete a source and all its chunks, summary, and graph data."""
-    deleted = delete_source(source, user_id)
+    deleted = await asyncio.to_thread(lambda: delete_source(source, user_id))
 
     if deleted == 0:
         raise HTTPException(status_code=404, detail=f"Source '{source}' not found")

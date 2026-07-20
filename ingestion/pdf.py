@@ -108,8 +108,8 @@ class PdfIngestor(BaseIngestor):
         pages = convert_from_path(pdf_path)
         pages_total = len(pages)
         logger.info(f"Found {pages_total} pages, starting from page {start_page + 1}")
+        self._set_estimate(pages_total * 45)
 
-        # Write/update pages_total so the status endpoint can surface it immediately.
         with open(progress_file, "w") as f:
             json.dump(
                 {"text": full_text, "last_page": start_page - 1, "pages_total": pages_total}, f
@@ -263,31 +263,14 @@ class PdfIngestor(BaseIngestor):
 
         cleaned_pages: list[str] = []
         sorted_pages = sorted(page_texts)
-        pages_total = len(sorted_pages)
-        progress_file = DATA_DIR / f"{source_name}_progress.json"
-
-        logger.info(
-            f"_extract_typed_pages: '{source_name}' — {len(page_texts)} unique pages, "
-            f"progress_file={progress_file}"
-        )
-
-        # Write page count immediately; no last_page yet so frontend shows "Starting…"
-        logger.info(f"Writing initial progress (pages_total={pages_total}) → {progress_file}")
-        with open(progress_file, "w") as f:
-            json.dump({"pages_total": pages_total}, f)
-        logger.info(f"Initial progress written")
 
         for page_idx, page_no in enumerate(sorted_pages):
             if self.job_id and is_cancelled(self.job_id):
-                progress_file.unlink(missing_ok=True)
                 raise IngestionCancelled(f"Ingestion of '{source_name}' was cancelled")
 
             raw_page_text = "\n".join(page_texts[page_no])
             if not raw_page_text.strip():
                 cleaned_pages.append(raw_page_text)
-                logger.info(f"Page {page_idx+1}/{pages_total} (empty) — writing progress")
-                with open(progress_file, "w") as f:
-                    json.dump({"last_page": page_idx, "pages_total": pages_total}, f)
                 continue
 
             try:
@@ -304,12 +287,6 @@ class PdfIngestor(BaseIngestor):
                 )
                 cleaned_pages.append(raw_page_text)
 
-            logger.info(f"Page {page_idx+1}/{pages_total} — writing progress to {progress_file}")
-            with open(progress_file, "w") as f:
-                json.dump({"last_page": page_idx, "pages_total": pages_total}, f)
-            logger.info(f"Page {page_idx+1}/{pages_total} — progress written")
-
-        progress_file.unlink(missing_ok=True)
         return "\n\n".join(cleaned_pages)
 
     def _describe_images(self, doc, text: str, source_name: str) -> str:

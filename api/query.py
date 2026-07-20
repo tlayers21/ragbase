@@ -32,7 +32,10 @@ _SYSTEM_PROMPT = (
     "Answer in 2-3 paragraphs unless the user explicitly asks for more detail or the topic "
     "genuinely requires a longer explanation. "
     "Do not add unnecessary preamble, summaries, or padding. "
-    "Never cite source document names inline in your response."
+    "Never cite source document names inline in your response. "
+    "Never reference 'the context', 'the provided context', 'retrieved documents', "
+    "'the examples', 'the text', or any phrase that narrates where your information came from. "
+    "Weave all information naturally into your answer as if it were already known."
 )
 
 
@@ -156,6 +159,7 @@ async def query_stream(req: QueryRequest) -> StreamingResponse:
         ]
         prompt = build_answer_prompt(req.question, context, history_str)
 
+        logger.info("Emitting [STAGE] generating")
         yield f"data: [STAGE]{json.dumps({'stage': 'generating'})}\n\n"
         for token in generate_stream(prompt, system=_SYSTEM_PROMPT, model=get_model("answer")):
             yield f"data: {token}\n\n"

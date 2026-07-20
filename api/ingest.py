@@ -1,10 +1,12 @@
-import json
+import asyncio
+import re
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import APIRouter, Form, HTTPException, UploadFile
 
 from config.logging import setup_logging
-from config.paths import DATA_DIR, SOURCES_DIR
+from config.paths import SOURCES_DIR
 from ingestion.queue import (
     cancel_job,
     clear_completed,
@@ -18,22 +20,9 @@ logger = setup_logging(__name__)
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 
 
-def _read_progress(source: str) -> dict:
-    """Read last_page / pages_total from the ingestion progress file if it exists."""
-    progress_file = DATA_DIR / f"{source}_progress.json"
-    logger.debug(f"Reading progress file: {progress_file}")
-    if not progress_file.exists():
-        return {}
-    try:
-        with open(progress_file) as f:
-            data = json.load(f)
-        pages_total = data.get("pages_total")
-        last_page = data.get("last_page")
-        if pages_total and last_page is not None:
-            return {"pages_done": max(0, last_page), "pages_total": pages_total}
-    except Exception:
-        pass
-    return {}
+def _slugify(text: str) -> str:
+    text = re.sub(r"[^\w\s]", "", text.lower())
+    return re.sub(r"\s+", "_", text.strip())[:100]
 
 
 def _save_source_file(user_id: str, source: str, suffix: str, data: bytes) -> None:
@@ -64,12 +53,41 @@ async def ingest_file(
 @router.post("/url")
 async def ingest_url(
     url: str = Form(...),
-    source: str = Form(...),
     user_id: str = Form(...),
 ):
-    """Ingest a YouTube or video URL. Returns a job ID immediately."""
+    """Ingest a YouTube URL. Fetches video title via yt-dlp. Returns a job ID immediately."""
+
+    # Strip timestamp params that can cause yt-dlp to fail (&t=504s or ?t=504s)
+    url = re.sub(r"&t=\d+s?", "", url)
+    url = re.sub(r"\?t=\d+s?", "", url)
+
+    def _fetch_title() -> str:
+        try:
+            import yt_dlp
+
+            ydl_opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                return info.get("title", "") or ""
+        except Exception:
+            return ""
+
+    def _video_id_fallback() -> str:
+        try:
+            parsed = urlparse(url)
+            if "youtu.be" in parsed.netloc:
+                return parsed.path.lstrip("/").split("?")[0]
+            return parse_qs(parsed.query).get("v", ["youtube_video"])[0]
+        except Exception:
+            return "youtube_video"
+
+    raw_title = await asyncio.to_thread(_fetch_title)
+    source = _slugify(raw_title) if raw_title else ""
+    if not source:
+        source = _video_id_fallback()
+
     job_id = enqueue_url(url=url, source=source, user_id=user_id)
-    return {"job_id": job_id, "status": "queued"}
+    return {"job_id": job_id, "status": "queued", "source": source}
 
 
 @router.post("/text")
@@ -84,17 +102,37 @@ async def ingest_text(
     return {"job_id": job_id, "status": "queued"}
 
 
+@router.post("/generate_title")
+async def generate_title(text: str = Form(...)):
+    """Generate a short 2-5 word title for ingested text using the fast LLM."""
+    import ollama
+
+    from config.models import get_model
+
+    excerpt = text[:500]
+    prompt = (
+        "Generate a short 2-5 word title for this text. "
+        "Reply with only the title, no punctuation, no quotes.\n\n"
+        f"{excerpt}"
+    )
+
+    def _call() -> str:
+        resp = ollama.generate(model=get_model("title"), prompt=prompt)
+        return resp["response"].strip()
+
+    try:
+        title = await asyncio.to_thread(_call)
+    except Exception as e:
+        logger.warning(f"Title generation failed: {e}")
+        title = ""
+
+    return {"title": title}
+
+
 @router.get("/status")
 async def queue_status():
-    """Get current status of all ingestion jobs, with page-level progress where available."""
-    jobs = get_status()
-    enriched = []
-    for job in jobs:
-        job_out = dict(job)
-        if job.get("status") in {"ingesting", "ingested"} and job.get("source"):
-            job_out.update(_read_progress(job["source"]))
-        enriched.append(job_out)
-    return {"jobs": enriched}
+    """Get current status of all ingestion jobs."""
+    return {"jobs": get_status()}
 
 
 @router.post("/clear_completed")

@@ -53,6 +53,16 @@ def _update_job(job_id: str, new_status: str) -> None:
     _save_status(status)
 
 
+def update_job_estimate(job_id: str, estimated_seconds: int) -> None:
+    """Update the time estimate for an active job."""
+    status = _load_status()
+    for job in status:
+        if job["id"] == job_id:
+            job["estimated_seconds"] = estimated_seconds
+            break
+    _save_status(status)
+
+
 def _find_active_job(source: str, user_id: str) -> dict | None:
     """Find an already active job for the same source and user."""
     for job in _load_status():
@@ -210,6 +220,18 @@ def enqueue(
         tmp.write(file_bytes)
         tmp_path = tmp.name
 
+    file_size_mb = len(file_bytes) / 1_048_576
+    if suffix in SUPPORTED_PDF_EXTENSIONS:
+        estimated_seconds = max(5, int(file_size_mb * 1.5))
+    elif suffix in SUPPORTED_IMAGE_EXTENSIONS:
+        estimated_seconds = 15
+    elif suffix in SUPPORTED_VIDEO_EXTENSIONS:
+        estimated_seconds = max(5, int(file_size_mb * 1.0))
+    elif suffix in SUPPORTED_TEXT_EXTENSIONS:
+        estimated_seconds = 3
+    else:
+        estimated_seconds = 30
+
     job = {
         "id": job_id,
         "filename": filename,
@@ -217,6 +239,7 @@ def enqueue(
         "user_id": user_id,
         "suffix": suffix,
         "tmp_path": tmp_path,
+        "estimated_seconds": estimated_seconds,
     }
 
     _add_job(job)
@@ -248,6 +271,7 @@ def enqueue_url(url: str, source: str, user_id: str) -> str:
         "user_id": user_id,
         "suffix": ".url",
         "tmp_path": url,
+        "estimated_seconds": 30,
     }
 
     _add_job(job)
@@ -280,6 +304,7 @@ def enqueue_text(text: str, source: str, user_id: str) -> str:
         "suffix": ".txt",
         "tmp_path": text,
         "is_string": True,
+        "estimated_seconds": 3,
     }
 
     _add_job(job)

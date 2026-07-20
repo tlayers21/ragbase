@@ -8,7 +8,7 @@ from pathlib import Path
 from config.logging import setup_logging
 from config.paths import KNOWLEDGE_GRAPH_DB_PATH
 from config.settings import EMBED_BATCH_SIZE
-from ingestion.queue import _update_job, is_cancelled
+from ingestion.queue import _update_job, is_cancelled, update_job_estimate
 from retrieval.embed import chunk_text, embed, embed_batch
 from retrieval.graph import build_from_chunks
 from utils.cache import clear_cache
@@ -122,8 +122,13 @@ class BaseIngestor(ABC):
         """Update the queue status for the active job, if one is attached."""
         if not self.job_id:
             return
-
         _update_job(self.job_id, new_status)
+
+    def _set_estimate(self, seconds: int) -> None:
+        """Update the time estimate for the current job."""
+        if not self.job_id:
+            return
+        update_job_estimate(self.job_id, seconds)
 
     def _count_graph_items_for_source(self, source: str) -> tuple[int, int]:
         """Count graph nodes/edges for a source to report background build progress."""
@@ -145,6 +150,9 @@ class BaseIngestor(ABC):
         """Build the knowledge graph asynchronously so ingestion can finish quickly."""
         logger.info(f"Building knowledge graph for '{source}' in background...")
         self._update_job_status("building_graph")
+        if self.job_id and is_cancelled(self.job_id):
+            logger.info(f"Graph build for '{source}' cancelled before starting")
+            return
         start = time.time()
         try:
             build_from_chunks(chunks, source, self.user_id)

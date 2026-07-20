@@ -17,6 +17,9 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "RAGbase",
   description: "Local AI knowledge base",
+  icons: {
+    icon: "/favicon.ico",
+  },
 };
 
 export default function RootLayout({

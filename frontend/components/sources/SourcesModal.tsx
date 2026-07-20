@@ -3,7 +3,7 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import dynamic from "next/dynamic";
 import { X, Search, Trash2, FileText, Loader2, ChevronLeft } from "lucide-react";
-import { fetchSources, deleteSource as apiDeleteSource, getSourceFileUrl, fetchSourceText } from "@/lib/api";
+import { fetchSources, deleteSource as apiDeleteSource, cancelIngestion, getSourceFileUrl, fetchSourceText } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { SourceSummary } from "@/types";
 
@@ -203,6 +203,7 @@ function PreviewPane({ source, onClose }: PreviewPaneProps) {
 interface SourceCardProps {
   source: SourceSummary;
   isConfirming: boolean;
+  isBuildingGraph?: boolean;
   onPreview: (source: SourceSummary) => void;
   onRequestDelete: (source: string) => void;
   onConfirmDelete: (source: string) => void;
@@ -212,6 +213,7 @@ interface SourceCardProps {
 function SourceCard({
   source,
   isConfirming,
+  isBuildingGraph,
   onPreview,
   onRequestDelete,
   onConfirmDelete,
@@ -257,7 +259,9 @@ function SourceCard({
 
       {isConfirming && (
         <p className="text-[11px] text-red-600 dark:text-red-400 leading-snug" onClick={(e) => e.stopPropagation()}>
-          Delete &lsquo;{source.source}&rsquo;? This cannot be undone.
+          {isBuildingGraph
+            ? <>Still building knowledge graph. Cancel build and delete &lsquo;{source.source}&rsquo;?</>
+            : <>Delete &lsquo;{source.source}&rsquo;? This cannot be undone.</>}
         </p>
       )}
 
@@ -284,9 +288,10 @@ interface SourcesModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSourcesChanged?: () => void;
+  buildingGraphJobBySrc?: Record<string, string>;
 }
 
-export function SourcesModal({ isOpen, onClose, onSourcesChanged }: SourcesModalProps) {
+export function SourcesModal({ isOpen, onClose, onSourcesChanged, buildingGraphJobBySrc }: SourcesModalProps) {
   const [sources, setSources] = useState<SourceSummary[]>([]);
   const [isLoadingSources, setIsLoadingSources] = useState(false);
   const [query, setQuery] = useState("");
@@ -317,6 +322,10 @@ export function SourcesModal({ isOpen, onClose, onSourcesChanged }: SourcesModal
   const handleConfirmDelete = useCallback(
     async (source: string) => {
       try {
+        const jobId = buildingGraphJobBySrc?.[source];
+        if (jobId) {
+          await cancelIngestion(jobId);
+        }
         await apiDeleteSource(source);
         setSources((prev) => prev.filter((s) => s.source !== source));
         setConfirming(null);
@@ -325,7 +334,7 @@ export function SourcesModal({ isOpen, onClose, onSourcesChanged }: SourcesModal
         // keep confirming state so user can retry
       }
     },
-    [onSourcesChanged]
+    [onSourcesChanged, buildingGraphJobBySrc]
   );
 
   const handleClose = useCallback(() => {
@@ -425,6 +434,7 @@ export function SourcesModal({ isOpen, onClose, onSourcesChanged }: SourcesModal
                       key={source.source}
                       source={source}
                       isConfirming={confirming === source.source}
+                      isBuildingGraph={!!buildingGraphJobBySrc?.[source.source]}
                       onPreview={setPreview}
                       onRequestDelete={handleRequestDelete}
                       onConfirmDelete={handleConfirmDelete}

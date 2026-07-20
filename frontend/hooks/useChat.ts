@@ -40,6 +40,7 @@ export function useChat() {
   const [toast, setToast] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const isLoadingRef = useRef(false);
+  const generationRef = useRef(0);
 
   useEffect(() => {
     shouldResetSessions().then((reset) => {
@@ -109,7 +110,10 @@ export function useChat() {
       sourceFilter: string[] | null = null,
       isDirect: boolean = false
     ) => {
-      if (isLoadingRef.current) return;
+      if (isLoadingRef.current) {
+        abortRef.current?.abort();
+      }
+      const gen = ++generationRef.current;
       let sessionId = activeSessionId;
       let currentSessions = sessions;
 
@@ -253,7 +257,7 @@ export function useChat() {
                 ...s,
                 messages: s.messages.map((m) =>
                   m.id === assistantId
-                    ? { ...m, content: assistantContent, stage: undefined }
+                    ? { ...m, content: assistantContent }
                     : m
                 ),
               };
@@ -322,10 +326,12 @@ export function useChat() {
           return next;
         });
       } finally {
-        setIsLoading(false);
-        isLoadingRef.current = false;
-        setIsStreaming(false);
-        abortRef.current = null;
+        if (generationRef.current === gen) {
+          setIsLoading(false);
+          isLoadingRef.current = false;
+          setIsStreaming(false);
+          abortRef.current = null;
+        }
       }
     },
     [activeSessionId, sessions]

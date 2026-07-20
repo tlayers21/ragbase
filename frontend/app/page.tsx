@@ -27,6 +27,8 @@ export default function HomePage() {
     hiddenJobIds,
     isUploading,
     uploadFile,
+    ingestText,
+    ingestUrl,
     cancelJob,
     clearCompleted,
   } = useIngestion(refreshSources);
@@ -38,6 +40,17 @@ export default function HomePage() {
         jobs
           .filter((j) => j.status === "ingested" || j.status === "building_graph")
           .map((j) => j.source)
+      ),
+    [jobs]
+  );
+
+  // Map source name → job id for sources actively building their graph
+  const buildingGraphJobBySrc = useMemo(
+    () =>
+      Object.fromEntries(
+        jobs
+          .filter((j) => j.status === "building_graph")
+          .map((j) => [j.source, j.id])
       ),
     [jobs]
   );
@@ -171,7 +184,6 @@ export default function HomePage() {
         />
       ) : (
         <SourcesPanel
-          sources={sources}
           jobs={jobs}
           isUploading={isUploading}
           isCollapsed={isPanelCollapsed}
@@ -182,6 +194,8 @@ export default function HomePage() {
           onDropFiles={handleDropFiles}
           onCancelJob={cancelJob}
           onClearCompleted={clearCompleted}
+          onIngestText={ingestText}
+          onIngestUrl={ingestUrl}
         />
       )}
 
@@ -197,6 +211,7 @@ export default function HomePage() {
         isOpen={isSourcesModalOpen}
         onClose={() => setIsSourcesModalOpen(false)}
         onSourcesChanged={refreshSources}
+        buildingGraphJobBySrc={buildingGraphJobBySrc}
       />
     </div>
   );

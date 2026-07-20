@@ -222,9 +222,7 @@ export function Sidebar({
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-sidebar-border">
         <div className="flex items-center gap-2">
-          <div className="h-6 w-6 rounded bg-primary flex items-center justify-center">
-            <span className="text-primary-foreground text-xs font-bold">R</span>
-          </div>
+          <img src="/logo.png" alt="RAGbase" style={{ width: 36, height: 36, display: 'block' }} />
           <span className="font-semibold text-sm text-foreground">RAGbase</span>
         </div>
         <button
