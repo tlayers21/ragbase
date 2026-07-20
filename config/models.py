@@ -1,0 +1,27 @@
+# -- Model names ---------------------------------------------------------------
+MODEL_STANDARD = "qwen3"  # Standard reasoning and answer generation
+MODEL_FAST = "qwen2.5:3b"  # Fast model for fact-check, contradiction, classification
+MODEL_VISION_HEAVY = "qwen2.5vl"  # Handwriting, complex diagrams
+MODEL_VISION_FAST = "qwen2.5vl"  # Simple image classification
+MODEL_EMBED = "bge-m3"  # Embedding
+
+
+# -- Model routing -------------------------------------------------------------
+def get_model(task: str) -> str:
+    """Return the appropriate model name for a given task."""
+    routing = {
+        "answer": MODEL_STANDARD,
+        "query_rewrite": MODEL_STANDARD,
+        "fact_check": MODEL_FAST,
+        "contradiction": MODEL_FAST,
+        "summarize": MODEL_FAST,
+        "text_cleanup": MODEL_FAST,
+        "title": MODEL_FAST,
+        "vision_handwrite": MODEL_VISION_HEAVY,
+        "vision_diagram": MODEL_VISION_HEAVY,
+        "vision_simple": MODEL_VISION_FAST,
+        "embed": MODEL_EMBED,
+    }
+    if task not in routing:
+        raise ValueError(f"Unknown task '{task}'. Valid tasks: {list(routing.keys())}")
+    return routing[task]

@@ -1,0 +1,46 @@
+# Environment
+.env
+# Python
+__pycache__/
+*.pyc
+*.pyo
+# Agent
+.github/
+.vscode/
+.ruff_cache/
+# Logs
+logs/
+# Data (generated/personal, not source code)
+data/eval_set.json
+data/eval_set_test.json
+data/training_pairs.json
+data/queue_status.json
+data/feedback_log.json
+data/knowledge_graph.db
+data/training_data/
+data/chromadb/
+data/sources/
+# Models (large binary files, not committed)
+models/reranker_model.pt
+models/finetuned_embeddings/
+# Ingestion progress files
+*_progress.json
+# W&B
+wandb/
+# Docs (generated spec PDF, keep out of repo)
+docs/rag-project-spec.pdf
+# macOS
+.DS_Store
+# Virtual environment
+.venv/
+frontend/public/pdf.worker.min.mjs
+.DS_Store
+data/sources/
+data/chromadb/
+data/knowledge_graph.db*
+data/history.json
+history.json
+eval_set.json
+app.py
+.DS_Store
+frontend/public/pdf.worker.min.mjs

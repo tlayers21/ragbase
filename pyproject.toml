@@ -1,0 +1,30 @@
+[project]
+name = "ragbase"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "json-repair>=0.30.0",
+    "paddleocr>=3.7.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.21",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["api", "analysis", "config", "ingestion", "ml", "retrieval", "utils"]

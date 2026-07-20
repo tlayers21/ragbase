@@ -1,0 +1,192 @@
+@import "tailwindcss";
+
+/* Use .dark class for dark mode (set by next-themes) instead of media query */
+@variant dark (&:where(.dark, .dark *));
+
+/* ── Design tokens ──────────────────────────────────────────────────────────── */
+:root {
+  --background: #ffffff;
+  --surface: #f9fafb;
+  --surface-raised: #ffffff;
+  --border: #e5e7eb;
+  --border-subtle: #f3f4f6;
+  --foreground: #111827;
+  --foreground-muted: #6b7280;
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --primary-foreground: #ffffff;
+  --destructive: #dc2626;
+  --destructive-hover: #b91c1c;
+  --destructive-foreground: #ffffff;
+  --ring: #93c5fd;
+
+  /* Sidebar */
+  --sidebar-bg: #f3f4f6;
+  --sidebar-border: #e5e7eb;
+  --sidebar-item-hover: #e5e7eb;
+  --sidebar-item-active: #dbeafe;
+  --sidebar-item-active-text: #1d4ed8;
+}
+
+.dark {
+  --background: #262624;
+  --surface: #30302e;
+  --surface-raised: #3a3a38;
+  --border: #48484a;
+  --border-subtle: #3a3a38;
+  --foreground: #ececec;
+  --foreground-muted: #8e8e8e;
+  --primary: #3b82f6;
+  --primary-hover: #2563eb;
+  --primary-foreground: #ffffff;
+  --destructive: #ef4444;
+  --destructive-hover: #dc2626;
+  --destructive-foreground: #ffffff;
+  --ring: #3b82f6;
+
+  --sidebar-bg: #1e1e1c;
+  --sidebar-border: #48484a;
+  --sidebar-item-hover: #30302e;
+  --sidebar-item-active: #3a3a38;
+  --sidebar-item-active-text: #ececec;
+}
+
+/* Register tokens with Tailwind v4 */
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-border: var(--border);
+  --color-border-subtle: var(--border-subtle);
+  --color-foreground: var(--foreground);
+  --color-foreground-muted: var(--foreground-muted);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-ring: var(--ring);
+  --color-sidebar-bg: var(--sidebar-bg);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-item-hover: var(--sidebar-item-hover);
+  --color-sidebar-item-active: var(--sidebar-item-active);
+  --color-sidebar-item-active-text: var(--sidebar-item-active-text);
+
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+/* ── Base styles ────────────────────────────────────────────────────────────── */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+
+/* Focus ring */
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* Animated loading dots */
+@keyframes bounce-dot {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40% { transform: translateY(-4px); opacity: 1; }
+}
+.loading-dot {
+  animation: bounce-dot 1.4s ease-in-out infinite;
+}
+.loading-dot:nth-child(2) { animation-delay: 0.2s; }
+.loading-dot:nth-child(3) { animation-delay: 0.4s; }
+
+/* Single pulsating indicator shown while the assistant is "thinking" */
+@keyframes pulse-dot {
+  0%, 100% { transform: scale(0.8); opacity: 0.5; }
+  50% { transform: scale(1.15); opacity: 1; }
+}
+.pulse-dot {
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+
+/* Indeterminate shimmer for progress bars with no page granularity */
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+.progress-shimmer {
+  position: relative;
+  overflow: hidden;
+}
+.progress-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.25) 50%, transparent 100%);
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+/* Minimal markdown spacing for assistant messages (no typography plugin) */
+.markdown-body p { margin: 0 0 0.75em; }
+.markdown-body p:last-child { margin-bottom: 0; }
+.markdown-body ul,
+.markdown-body ol { margin: 0 0 0.75em; padding-left: 1.25em; }
+.markdown-body li { margin-bottom: 0.25em; }
+.markdown-body code {
+  background: var(--surface);
+  border-radius: 0.25em;
+  padding: 0.1em 0.35em;
+  font-size: 0.9em;
+}
+.markdown-body pre {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.5em;
+  padding: 0.75em;
+  overflow-x: auto;
+  margin: 0 0 0.75em;
+}
+.markdown-body pre code { background: none; padding: 0; }
+.markdown-body a { color: var(--primary); text-decoration: underline; }
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3 { font-weight: 600; margin: 0.75em 0 0.4em; }
+.markdown-body h1:first-child,
+.markdown-body h2:first-child,
+.markdown-body h3:first-child { margin-top: 0; }
+.markdown-body blockquote {
+  border-left: 2px solid var(--border);
+  padding-left: 0.75em;
+  color: var(--foreground-muted);
+  margin: 0 0 0.75em;
+}
+.markdown-body .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.25em 0;
+}
