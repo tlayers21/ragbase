@@ -1,16 +1,11 @@
-import os
-
-from dotenv import load_dotenv
-
-load_dotenv()
-
 # -- Infrastructure ------------------------------------------------------------
-API_URL = os.environ["API_URL"]
-OLLAMA_URL = os.environ["OLLAMA_URL"]
-CHROMA_HOST = os.environ["CHROMA_HOST"]
-CHROMA_PORT = int(os.environ["CHROMA_PORT"])
-REDIS_HOST = os.environ["REDIS_HOST"]
-REDIS_PORT = int(os.environ["REDIS_PORT"])
+# No .env — all local defaults are hardcoded here.
+API_URL = "http://localhost:8001"
+OLLAMA_URL = "http://localhost:11434"
+
+# -- Telemetry -------------------------------------------------------------------
+# Default only — data/settings.json can override at runtime (see config/runtime.py).
+TELEMETRY_ENABLED = True
 
 # -- Retrieval -----------------------------------------------------------------
 CHUNK_SIZE = 512
@@ -21,7 +16,6 @@ RERANKER_MIN_SCORE = -8.0
 CACHE_TTL = 86400  # 24 hours in seconds
 CACHE_SIMILARITY_THRESHOLD = 0.85
 RRF_K = 60
-MAX_RETRIEVAL_PASSES = 3
 
 # -- Ingestion -----------------------------------------------------------------
 VISION_TIMEOUT_SECONDS = 180

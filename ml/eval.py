@@ -8,18 +8,10 @@ from config.logging import setup_logging
 from config.models import get_model
 from config.paths import EVAL_SET_PATH
 from config.settings import OLLAMA_URL, WANDB_PROJECT
+from ml.common import to_chunk_index
 from retrieval.pipeline import RAGPipeline, configure_dspy
 
 logger = setup_logging(__name__)
-
-
-def _to_chunk_index(value: Any) -> int | None:
-    """Normalize chunk index values from JSON/metadata into int for comparison."""
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str) and value.isdigit():
-        return int(value)
-    return None
 
 
 def _load_eval_set(path: Path) -> list[dict[str, Any]]:
@@ -47,7 +39,6 @@ def _retrieve_metas(
         original_question=question,
         user_id=user_id,
         source_filter=None,
-        history_str="",
     )
     return metas
 
@@ -72,14 +63,14 @@ def run_eval(
     for i, item in enumerate(examples, start=1):
         question = item["question"]
         expected_source = item["source"]
-        expected_chunk_index = _to_chunk_index(item.get("correct_chunk_index"))
+        expected_chunk_index = to_chunk_index(item.get("correct_chunk_index"))
 
         metas = _retrieve_metas(pipeline, question, user_id)[:top_k]
 
         rank: int | None = None
         for j, meta in enumerate(metas, start=1):
             retrieved_source = meta.get("source")
-            retrieved_chunk_index = _to_chunk_index(meta.get("chunk_index"))
+            retrieved_chunk_index = to_chunk_index(meta.get("chunk_index"))
             if (
                 retrieved_source == expected_source
                 and retrieved_chunk_index == expected_chunk_index

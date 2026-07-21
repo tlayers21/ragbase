@@ -65,6 +65,7 @@ class ImageIngestor(BaseIngestor):
             prediction = predictions[0]
             text_values = []
 
+            # PaddleOCR renamed its result fields across versions — check both
             for field_name in ("rec_texts", "text_word"):
                 if isinstance(prediction, dict):
                     field_value = prediction.get(field_name)

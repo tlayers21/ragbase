@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { useSettings } from "@/hooks/useSettings";
 import type { ChatSession } from "@/types";
 
 const TOKEN_LIMIT = 40960;
@@ -56,6 +57,7 @@ export function Sidebar({
   onPinSession,
   onToggleCollapse,
 }: SidebarProps) {
+  const { displayName } = useSettings();
   const sorted = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt);
   const pinnedSessions = sorted.filter((s) => s.pinned);
   const recentSessions = sorted.filter((s) => !s.pinned);
@@ -271,6 +273,9 @@ export function Sidebar({
 
       {/* Footer */}
       <div className="border-t border-sidebar-border px-3 pt-2 pb-1">
+        {displayName && (
+          <p className="px-2 pb-1 text-xs text-foreground-muted/70">Hey, {displayName}</p>
+        )}
         {estimatedTokens > 0 && (() => {
           const pct = estimatedTokens / TOKEN_LIMIT;
           const barColor =

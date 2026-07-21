@@ -1,10 +1,5 @@
-import { DEFAULT_API_URL, DEFAULT_USER_ID } from "@/lib/config";
-import type {
-  QueryResponse,
-  SourceSummary,
-  ChunkDetail,
-  IngestionStatus,
-} from "@/types";
+import { DEFAULT_API_URL } from "@/lib/config";
+import type { SourceSummary, IngestionStatus } from "@/types";
 
 // Read runtime overrides from localStorage (set on the settings page).
 function getBaseUrl(): string {
@@ -12,15 +7,49 @@ function getBaseUrl(): string {
   return localStorage.getItem("ragbase_api_url") ?? DEFAULT_API_URL;
 }
 
-export function getUserId(): string {
-  if (typeof window === "undefined") return DEFAULT_USER_ID;
-  return localStorage.getItem("ragbase_user_id") ?? DEFAULT_USER_ID;
+// ── User settings ────────────────────────────────────────────────────────────
+
+export interface UserSettings {
+  user_id: string;
+  display_name: string | null;
+}
+
+// The backend owns the user identity — fetched once per session and cached.
+let cachedUserSettings: UserSettings | null = null;
+
+export async function fetchUserSettings(force = false): Promise<UserSettings> {
+  if (cachedUserSettings && !force) return cachedUserSettings;
+  const res = await fetch(`${getBaseUrl()}/settings/user`);
+  if (!res.ok) throw new Error(`fetchUserSettings: ${res.status}`);
+  cachedUserSettings = (await res.json()) as UserSettings;
+  return cachedUserSettings;
+}
+
+export async function saveDisplayName(displayName: string): Promise<void> {
+  const res = await fetch(`${getBaseUrl()}/settings/display_name`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ display_name: displayName }),
+  });
+  if (!res.ok) throw new Error(`saveDisplayName: ${res.status}`);
+  if (cachedUserSettings) {
+    cachedUserSettings = { ...cachedUserSettings, display_name: displayName.trim() || null };
+  }
+}
+
+export async function setTelemetryEnabled(enabled: boolean): Promise<void> {
+  const res = await fetch(`${getBaseUrl()}/settings/telemetry`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) throw new Error(`setTelemetryEnabled: ${res.status}`);
 }
 
 // ── Sources ──────────────────────────────────────────────────────────────────
 
 export function getSourceFileUrl(source: string): string {
-  return `${getBaseUrl()}/sources/${encodeURIComponent(source)}/file?user_id=${getUserId()}`;
+  return `${getBaseUrl()}/sources/${encodeURIComponent(source)}/file`;
 }
 
 export async function fetchSourceText(source: string): Promise<string> {
@@ -47,49 +76,19 @@ export async function generateChatTitle(message: string): Promise<string> {
 // ── Documents ────────────────────────────────────────────────────────────────
 
 export async function fetchSources(): Promise<SourceSummary[]> {
-  const res = await fetch(
-    `${getBaseUrl()}/documents/?user_id=${getUserId()}`
-  );
+  const res = await fetch(`${getBaseUrl()}/documents/`);
   if (!res.ok) throw new Error(`fetchSources: ${res.status}`);
   return res.json();
 }
 
-export async function fetchChunks(source: string): Promise<ChunkDetail[]> {
-  const res = await fetch(
-    `${getBaseUrl()}/documents/${encodeURIComponent(source)}?user_id=${getUserId()}`
-  );
-  if (!res.ok) throw new Error(`fetchChunks: ${res.status}`);
-  return res.json();
-}
-
 export async function deleteSource(source: string): Promise<void> {
-  const res = await fetch(
-    `${getBaseUrl()}/documents/${encodeURIComponent(source)}?user_id=${getUserId()}`,
-    { method: "DELETE" }
-  );
+  const res = await fetch(`${getBaseUrl()}/documents/${encodeURIComponent(source)}`, {
+    method: "DELETE",
+  });
   if (!res.ok) throw new Error(`deleteSource: ${res.status}`);
 }
 
 // ── Query ────────────────────────────────────────────────────────────────────
-
-export async function sendQuery(
-  question: string,
-  history: { role: string; content: string }[] = [],
-  sourceFilter: string[] | null = null
-): Promise<QueryResponse> {
-  const res = await fetch(`${getBaseUrl()}/query`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      question,
-      user_id: getUserId(),
-      history,
-      source_filter: sourceFilter,
-    }),
-  });
-  if (!res.ok) throw new Error(`sendQuery: ${res.status}`);
-  return res.json();
-}
 
 export interface StreamQueryHandlers {
   onStage?: (stage: string) => void;
@@ -170,7 +169,6 @@ export async function streamQuery(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       question,
-      user_id: getUserId(),
       history,
       source_filter: sourceFilter,
     }),
@@ -192,7 +190,6 @@ export async function streamDirectQuery(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       question,
-      user_id: getUserId(),
       history,
       source_filter: null,
     }),
@@ -210,7 +207,6 @@ export async function ingestFile(
   const form = new FormData();
   form.append("file", file);
   form.append("source", sourceName);
-  form.append("user_id", getUserId());
 
   const res = await fetch(`${getBaseUrl()}/ingest/file`, {
     method: "POST",
@@ -246,7 +242,6 @@ export async function ingestText(
   const form = new FormData();
   form.append("text", text);
   form.append("source", sourceName);
-  form.append("user_id", getUserId());
   const res = await fetch(`${getBaseUrl()}/ingest/text`, { method: "POST", body: form });
   if (!res.ok) throw new Error(`ingestText: ${res.status}`);
   return res.json();
@@ -257,7 +252,6 @@ export async function ingestUrl(
 ): Promise<{ job_id: string; status: string; source: string }> {
   const form = new FormData();
   form.append("url", url);
-  form.append("user_id", getUserId());
   const res = await fetch(`${getBaseUrl()}/ingest/url`, { method: "POST", body: form });
   if (!res.ok) throw new Error(`ingestUrl: ${res.status}`);
   return res.json();
@@ -273,13 +267,12 @@ export async function generateTitle(text: string): Promise<string> {
 }
 
 export async function compactMessages(
-  messages: { role: string; content: string }[],
-  userId: string
+  messages: { role: string; content: string }[]
 ): Promise<string> {
   const res = await fetch(`${getBaseUrl()}/compact`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages, user_id: userId }),
+    body: JSON.stringify({ messages }),
   });
   if (!res.ok) throw new Error(`compactMessages: ${res.status}`);
   const data = await res.json();

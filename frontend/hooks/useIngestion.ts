@@ -8,7 +8,6 @@ import {
   fetchIngestionStatus,
   cancelIngestion,
   clearCompletedJobs,
-  getUserId,
 } from "@/lib/api";
 import { deriveSourceName } from "@/lib/utils";
 import type { IngestionJob } from "@/types";
@@ -119,7 +118,6 @@ export function useIngestion(onComplete?: () => void) {
           id: result.job_id,
           filename: file.name,
           source: sourceName,
-          user_id: getUserId(),
           suffix: suffixMatch ? suffixMatch[0].toLowerCase() : "",
           status: result.status,
         };
@@ -155,7 +153,6 @@ export function useIngestion(onComplete?: () => void) {
           id: result.job_id,
           filename: sourceName,
           source: sourceName,
-          user_id: getUserId(),
           suffix: ".txt",
           status: result.status,
         };
@@ -181,7 +178,6 @@ export function useIngestion(onComplete?: () => void) {
           id: result.job_id,
           filename: result.source,
           source: result.source,
-          user_id: getUserId(),
           suffix: ".url",
           status: result.status,
         };

@@ -12,27 +12,10 @@ pkill -f "next dev" 2>/dev/null || true
 echo "Stopping server if running..."
 lsof -i :8001 | awk 'NR>1 {print $2}' | xargs kill -9 2>/dev/null || true
 
-# 2. Delete all ChromaDB collections
-echo "Clearing ChromaDB collections..."
-python3 -c "
-import chromadb
-client = chromadb.HttpClient(host='localhost', port=8000)
-deleted = []
-for name in ['user_test_user', 'user_test_user_summaries', 'knowledge']:
-    try:
-        client.delete_collection(name)
-        deleted.append(name)
-    except Exception:
-        pass
-for col in client.list_collections():
-    try:
-        client.delete_collection(col.name)
-        deleted.append(col.name)
-    except Exception:
-        pass
-print(f'Deleted collections: {deleted}')
-print(f'Remaining: {[c.name for c in client.list_collections()]}')
-"
+# 2. Clear embedded ChromaDB storage
+echo "Clearing ChromaDB data..."
+rm -rf data/chromadb && mkdir -p data/chromadb
+echo "ChromaDB data cleared"
 
 # 3. Clear knowledge graph (delete the SQLite file entirely for a clean slate)
 echo "Clearing knowledge graph..."
@@ -48,9 +31,10 @@ for suffix in ['', '-shm', '-wal']:
 print('Knowledge graph cleared')
 "
 
-# 4. Flush Redis semantic cache
-echo "Flushing Redis cache..."
-redis-cli FLUSHALL 2>/dev/null && echo "Redis flushed" || echo "Redis not running or unavailable — skipping"
+# 4. Clear semantic cache
+echo "Clearing semantic cache..."
+rm -f data/cache.db data/cache.db-shm data/cache.db-wal
+echo "Semantic cache cleared"
 
 # 5. Clear local state files
 echo "Clearing local state files..."
@@ -69,16 +53,5 @@ echo "Source files cleared"
 # 7. Signal the frontend to clear chat history on next load
 touch data/reset_sessions_flag
 echo "Session reset flag created — frontend will clear chat history on next startup"
-
-# 8. Confirm clean state
-echo "Confirming clean state..."
-python3 -c "
-import chromadb
-client = chromadb.HttpClient(host='localhost', port=8000)
-cols = client.list_collections()
-print(f'ChromaDB collections remaining: {[c.name for c in cols]}')
-assert len(cols) == 0, 'Collections not fully cleared!'
-print('All clear!')
-"
 
 echo "=== Reset complete ==="

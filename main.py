@@ -1,11 +1,22 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api import compact_router, documents_router, ingest_router, query_router, sessions_router, sources_router, title_router
+from api import (
+    compact_router,
+    documents_router,
+    ingest_router,
+    query_router,
+    sessions_router,
+    settings_router,
+    sources_router,
+    title_router,
+)
 from config.logging import setup_logging
 from config.models import MODEL_STANDARD, get_model
+from config.runtime import DEVICE_ID, USER_ID, load_settings
 from config.settings import OLLAMA_URL
 from ingestion.queue import start as start_ingestion_queue
 from retrieval.pipeline import configure_dspy
@@ -15,15 +26,16 @@ logger = setup_logging(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    import asyncio
-
     logger.info("Starting RAGbase...")
+    load_settings()
+    logger.info(f"User ID: {USER_ID}, telemetry device ID: {DEVICE_ID}")
     configure_dspy(OLLAMA_URL, MODEL_STANDARD)
     start_ingestion_queue()
 
     async def _warmup_reranker() -> None:
         try:
             from retrieval.reranker import rerank
+
             await asyncio.to_thread(rerank, "warmup", ["warmup"], [{}])
             logger.info("Reranker warmed up")
         except Exception as e:
@@ -31,6 +43,7 @@ async def lifespan(app: FastAPI):
 
     async def _warmup_models() -> None:
         import ollama as _ollama
+
         logger.info("Warming up models...")
         for task in ("answer", "summarize", "embed", "vision_simple"):
             model = get_model(task)
@@ -38,9 +51,7 @@ async def lifespan(app: FastAPI):
                 if task == "embed":
                     await asyncio.to_thread(_ollama.embeddings, model=model, prompt="hi")
                 else:
-                    await asyncio.to_thread(
-                        _ollama.generate, model, "hi"
-                    )
+                    await asyncio.to_thread(_ollama.generate, model, "hi")
                 logger.info(f"  {task} ({model}) warmed up")
             except Exception as e:
                 logger.warning(f"  {task} ({model}) warmup failed (non-blocking): {e}")
@@ -60,6 +71,7 @@ app = FastAPI(title="RAGbase", version="1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
+    allow_origin_regex=r"http://localhost:\d+",  # dev server may fall back to another port
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -71,6 +83,7 @@ app.include_router(ingest_router)
 app.include_router(query_router)
 app.include_router(documents_router)
 app.include_router(sessions_router)
+app.include_router(settings_router)
 app.include_router(sources_router)
 app.include_router(title_router)
 

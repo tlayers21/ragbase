@@ -71,7 +71,7 @@ class PdfIngestor(BaseIngestor):
         if image_count > HANDWRITTEN_IMAGE_THRESHOLD and len(cleaned) < HANDWRITTEN_TEXT_THRESHOLD:
             return True
 
-        if image_count > 0 and len(cleaned) < (image_count * 50):
+        if image_count > 0 and len(cleaned) < (image_count * 50):  # <50 chars of text per image
             return True
 
         return False
@@ -108,8 +108,10 @@ class PdfIngestor(BaseIngestor):
         pages = convert_from_path(pdf_path)
         pages_total = len(pages)
         logger.info(f"Found {pages_total} pages, starting from page {start_page + 1}")
-        self._set_estimate(pages_total * 45)
+        self._set_estimate(pages_total * 45)  # ~45s/page observed for Qwen2.5-VL transcription
 
+        # Write the progress file before the first page so a crash mid-page-1
+        # still leaves a resumable state on disk
         with open(progress_file, "w") as f:
             json.dump(
                 {"text": full_text, "last_page": start_page - 1, "pages_total": pages_total}, f
@@ -264,7 +266,7 @@ class PdfIngestor(BaseIngestor):
         cleaned_pages: list[str] = []
         sorted_pages = sorted(page_texts)
 
-        for page_idx, page_no in enumerate(sorted_pages):
+        for page_no in sorted_pages:
             if self.job_id and is_cancelled(self.job_id):
                 raise IngestionCancelled(f"Ingestion of '{source_name}' was cancelled")
 

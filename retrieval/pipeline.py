@@ -29,17 +29,9 @@ class RAGAnswerer(dspy.Signature):
     question: str = dspy.InputField(desc="The user's question")
     context: str = dspy.InputField(desc="Retrieved context chunks")
     history: str = dspy.InputField(desc="Recent conversation history", default="")
-    answer: str = dspy.OutputField(desc="Concise answer without inline source citations or context references")
-
-
-class QueryRefinement(dspy.Signature):
-    """Refine a search query when initial results were insufficient."""
-
-    original_question: str = dspy.InputField(desc="The user's original question")
-    previous_query: str = dspy.InputField(
-        desc="The previous search query that returned poor results"
+    answer: str = dspy.OutputField(
+        desc="Concise answer without inline source citations or context references"
     )
-    refined_query: str = dspy.OutputField(desc="A refined query to try a different angle")
 
 
 class TextCleanup(dspy.Signature):
@@ -92,8 +84,7 @@ class RAGPipeline(dspy.Module):
     3. Chunk-level hybrid search
     4. Rerank
     5. Threshold filter
-    6. Multi-hop if needed
-    7. Answer generation
+    6. Answer generation
 
     NOTE: self.rewriter (QueryRewriter) is retained but unused in forward() —
     ml/collect_pairs.py and ml/eval.py still call pipeline.rewriter directly
@@ -104,7 +95,6 @@ class RAGPipeline(dspy.Module):
     def __init__(self):
         self.rewriter = dspy.Predict(QueryRewriter)
         self.answerer = dspy.Predict(RAGAnswerer)
-        self.refiner = dspy.Predict(QueryRefinement)
 
     def forward(
         self,
@@ -120,10 +110,9 @@ class RAGPipeline(dspy.Module):
             original_question=question,
             user_id=user_id,
             source_filter=source_filter,
-            history_str=history_str,
         )
 
-        # Step 7 - Answer generation
+        # Step 6 - Answer generation
         context = build_context(docs, metas)
         answer = self.answerer(
             question=question,
@@ -158,7 +147,6 @@ class RAGPipeline(dspy.Module):
             original_question=question,
             user_id=user_id,
             source_filter=source_filter,
-            history_str=history_str,
         )
 
         context = build_context(docs, metas)
@@ -194,7 +182,8 @@ class RAGPipeline(dspy.Module):
         else:
             all_sources = relevant_sources
 
-        # Respect source filter if set
+        # Respect source filter if set; if stage 1 + graph found nothing inside
+        # the filter, fall back to searching the filtered sources directly
         if source_filter:
             all_sources = [s for s in all_sources if s in source_filter] or source_filter
 
@@ -242,13 +231,12 @@ class RAGPipeline(dspy.Module):
         query: str,
         original_question: str,
         user_id: str,
-        source_filter: list[str],
-        history_str: str,
-        pass_num: int = 1,
+        source_filter: list[str] | None,
     ) -> tuple[list[str], list[dict], list[float]]:
         """
-        Retrieval with multi-hop support. If results are poor, refines
-        the query and tries again up to MAX_RETRIEVAL_PASSES times.
+        Full retrieval: candidate search with `query`, then rerank against
+        `original_question` — the two differ when callers (ml/ scripts) search
+        with a rewritten query but still score against the user's phrasing.
         """
         docs, metas = self.search_candidates(query, user_id, source_filter)
         return self.rerank_candidates(original_question, docs, metas)

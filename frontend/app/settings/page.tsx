@@ -1,19 +1,30 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, Save } from "lucide-react";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { useSettings } from "@/hooks/useSettings";
 
 export default function SettingsPage() {
-  const { userId, setUserId, apiUrl, setApiUrl } = useSettings();
-  const [localUserId, setLocalUserId] = useState(userId);
+  const {
+    apiUrl,
+    setApiUrl,
+    displayName,
+    setDisplayName,
+    telemetryEnabled,
+    setTelemetryEnabled,
+  } = useSettings();
+  const [localDisplayName, setLocalDisplayName] = useState(displayName);
   const [localApiUrl, setLocalApiUrl] = useState(apiUrl);
   const [saved, setSaved] = useState(false);
 
+  // Sync once the backend-fetched values arrive.
+  useEffect(() => setLocalDisplayName(displayName), [displayName]);
+  useEffect(() => setLocalApiUrl(apiUrl), [apiUrl]);
+
   function handleSave() {
-    setUserId(localUserId.trim() || "test_user");
+    setDisplayName(localDisplayName.trim());
     setApiUrl(localApiUrl.trim() || "http://localhost:8001");
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -33,20 +44,20 @@ export default function SettingsPage() {
       <h1 className="text-2xl font-bold text-foreground mb-6">Settings</h1>
 
       <div className="space-y-6">
-        {/* User ID */}
+        {/* Display name */}
         <div className="rounded-xl border border-border bg-surface p-5">
           <label className="block text-sm font-semibold text-foreground mb-1">
-            User ID
+            Display name
           </label>
           <p className="text-xs text-foreground-muted mb-3">
-            Used to isolate your documents and sessions. Changing this switches
-            to a different knowledge base.
+            Optional. Used for a friendly greeting — never sent anywhere.
           </p>
           <input
             type="text"
-            value={localUserId}
-            onChange={(e) => setLocalUserId(e.target.value)}
-            placeholder="test_user"
+            value={localDisplayName}
+            onChange={(e) => setLocalDisplayName(e.target.value)}
+            onBlur={() => setDisplayName(localDisplayName.trim())}
+            placeholder="e.g. Tommy"
             className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-foreground-muted outline-none focus:border-primary/60 focus:ring-1 focus:ring-ring transition-shadow"
           />
         </div>
@@ -67,6 +78,37 @@ export default function SettingsPage() {
             placeholder="http://localhost:8001"
             className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-foreground-muted outline-none focus:border-primary/60 focus:ring-1 focus:ring-ring transition-shadow"
           />
+        </div>
+
+        {/* Telemetry */}
+        <div className="rounded-xl border border-border bg-surface p-5">
+          <div className="flex items-center justify-between gap-4">
+            <label
+              htmlFor="telemetry-toggle"
+              className="text-sm font-semibold text-foreground cursor-pointer"
+            >
+              Send anonymous usage telemetry
+            </label>
+            <button
+              id="telemetry-toggle"
+              role="switch"
+              aria-checked={telemetryEnabled}
+              onClick={() => setTelemetryEnabled(!telemetryEnabled)}
+              className={`relative h-6 w-11 flex-shrink-0 rounded-full transition-colors ${
+                telemetryEnabled ? "bg-primary" : "bg-border"
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                  telemetryEnabled ? "translate-x-[22px]" : "translate-x-0.5"
+                }`}
+              />
+            </button>
+          </div>
+          <p className="text-xs text-foreground-muted mt-2">
+            Sends anonymous usage data (query latency, source counts) to help improve
+            RAGbase. No queries, documents, or personal data are ever sent.
+          </p>
         </div>
 
         {/* Theme */}

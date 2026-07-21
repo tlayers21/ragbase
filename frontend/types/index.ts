@@ -7,27 +7,10 @@ export interface SourceSummary {
   contradiction_count: number;
 }
 
-export interface ChunkDetail {
-  chunk_index: number;
-  text: string;
-  flagged: boolean;
-  flag_reason: string;
-  contradiction: boolean;
-  contradiction_reason: string;
-  contradicts_source: string;
-}
-
-export interface QueryResponse {
-  answer: string;
-  sources: string[];
-  scores: number[];
-}
-
 export interface IngestionJob {
   id: string;
   filename: string;
   source: string;
-  user_id: string;
   suffix: string;
   status: string;
   tmp_path?: string;

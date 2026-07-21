@@ -1,3 +1,4 @@
+from analysis.common import parse_verdict, update_chunk_metadata
 from config.logging import setup_logging
 from retrieval.embed import embed
 from utils.chromadb_client import get_collection
@@ -29,54 +30,12 @@ different perspectives on the same topic are not contradictions."""
 
     try:
         raw = "".join(generate_stream(prompt))
-        verdict = "NO_CONTRADICTION"
-        reason = "No contradiction found."
-
-        for line in raw.strip().split("\n"):
-            if line.startswith("VERDICT:"):
-                verdict = line.replace("VERDICT:", "").strip()
-            elif line.startswith("REASON:"):
-                reason = line.replace("REASON:", "").strip()
-
+        verdict, reason = parse_verdict(raw, "NO_CONTRADICTION", "No contradiction found.")
         return verdict == "CONTRADICTION", reason
 
     except Exception as e:
         logger.error(f"Contradiction check failed: {e}")
         return False, "Contradiction check could not be completed."
-
-
-def _update_contradiction_flag(
-    source: str,
-    chunk_index: int,
-    is_contradiction: bool,
-    reason: str,
-    contradicts_source: str,
-    user_id: str,
-) -> None:
-    """Update contradiction metadata for a chunk in ChromaDB."""
-    try:
-        collection = get_collection(user_id)
-        results = collection.get(
-            where={"$and": [{"source": source}, {"chunk_index": chunk_index}]},
-            include=["metadatas"],
-        )
-        if not results["ids"]:
-            return
-
-        chunk_id = results["ids"][0]
-        existing_meta = results["metadatas"][0]
-        updated_meta = {
-            **existing_meta,
-            "contradiction": is_contradiction,
-            "contradiction_reason": reason,
-            "contradicts_source": contradicts_source,
-        }
-        collection.update(ids=[chunk_id], metadatas=[updated_meta])
-
-    except Exception as e:
-        logger.error(
-            f"Failed to update contradiction flag for chunk {chunk_index} of '{source}': {e}"
-        )
 
 
 def find_contradictions(source: str, user_id: str) -> int:
@@ -126,12 +85,21 @@ def find_contradictions(source: str, user_id: str) -> int:
                     f"and '{similar_source}' chunk {similar_chunk_index}"
                 )
 
-                _update_contradiction_flag(
-                    source, chunk_index, True, reason, similar_source, user_id
-                )
-                _update_contradiction_flag(
-                    similar_source, similar_chunk_index, True, reason, source, user_id
-                )
+                # Flag both sides so each source's detail view shows the conflict
+                for side, other, idx in (
+                    (source, similar_source, chunk_index),
+                    (similar_source, source, similar_chunk_index),
+                ):
+                    update_chunk_metadata(
+                        side,
+                        idx,
+                        {
+                            "contradiction": True,
+                            "contradiction_reason": reason,
+                            "contradicts_source": other,
+                        },
+                        user_id,
+                    )
 
     logger.info(
         f"Contradiction check complete for '{source}': {contradiction_count} contradictions found"

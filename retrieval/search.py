@@ -27,7 +27,7 @@ def search(
     where = _build_filter(user_id, source_filter)
 
     # Fetch more candidates than needed for reranking
-    fetch_n = min(TOP_K_CANDIDATES, collection.count())
+    fetch_n = min(TOP_K_CANDIDATES, collection.count())  # Chroma errors if n > collection size
     if fetch_n == 0:
         return [], []
 
@@ -45,7 +45,8 @@ def search(
     if not docs:
         return [], []
 
-    # BM25 over the vector candidates
+    # BM25 runs over the vector candidates only (not the full corpus) — cheap
+    # keyword re-scoring of an already-relevant pool
     tokenized = [doc.lower().split() for doc in docs]
     bm25 = BM25Okapi(tokenized)
     bm25_scores = bm25.get_scores(query.lower().split())
@@ -111,8 +112,10 @@ def search_summaries(
     return filtered
 
 
+# -- Filter and fusion helpers -----------------------------------------------
 def _build_filter(user_id: str, source_filter: list[str] | None = None) -> dict | None:
     """Build a ChromaDB where filter for user isolation and optional source filtering."""
+    # ChromaDB requires explicit $and for multi-field filters
     if source_filter and len(source_filter) == 1:
         return {"$and": [{"user_id": user_id}, {"source": source_filter[0]}]}
 

@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA_DIR="${ROOT_DIR}/data/training_data"
 API_BASE_URL="${API_BASE_URL:-http://127.0.0.1:8001}"
-USER_ID="${1:-${USER_ID:-test_user}}"
 
 slugify() {
   local input="$1"
@@ -24,8 +23,7 @@ ingest_one() {
   echo "Ingesting: ${base_name} -> source='${source}'"
   curl -sS -X POST "${API_BASE_URL}/ingest/file" \
     -F "file=@${file_path}" \
-    -F "source=${source}" \
-    -F "user_id=${USER_ID}" >/dev/null
+    -F "source=${source}" >/dev/null
 }
 
 main() {
@@ -40,7 +38,7 @@ main() {
     exit 1
   fi
 
-  echo "Queueing ${#files[@]} files for user_id='${USER_ID}' via ${API_BASE_URL}"
+  echo "Queueing ${#files[@]} files via ${API_BASE_URL}"
   for file_path in "${files[@]}"; do
     ingest_one "${file_path}"
   done

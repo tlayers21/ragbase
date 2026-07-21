@@ -1,20 +1,20 @@
 import chromadb
 
 from config.logging import setup_logging
-from config.settings import CHROMA_HOST, CHROMA_PORT
+from config.paths import CHROMADB_DIR
 
 logger = setup_logging(__name__)
 
-# Shared connection to ChromaDB - created once per run, reused everywhere
+# Shared embedded ChromaDB client — created once per run, reused everywhere
 _client = None
 
 
-def get_client() -> chromadb.HttpClient:
-    """Return the shared ChromaDB client. Connects once, reused everywhere."""
+def get_client() -> chromadb.ClientAPI:
+    """Return the shared embedded ChromaDB client (in-process, persisted to disk)."""
     global _client
     if _client is None:
-        logger.info(f"Connecting to ChromaDB at {CHROMA_HOST}:{CHROMA_PORT}")
-        _client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
+        logger.info(f"Opening embedded ChromaDB at {CHROMADB_DIR}")
+        _client = chromadb.PersistentClient(path=str(CHROMADB_DIR))
     return _client
 
 

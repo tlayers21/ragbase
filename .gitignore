@@ -1,5 +1,3 @@
-# Environment
-.env
 # Python
 __pycache__/
 *.pyc
@@ -16,10 +14,18 @@ data/eval_set_test.json
 data/training_pairs.json
 data/queue_status.json
 data/feedback_log.json
-data/knowledge_graph.db
+data/knowledge_graph.db*
 data/training_data/
 data/chromadb/
 data/sources/
+data/cache.db*
+data/user_id.txt
+data/device_id.txt
+data/settings.json
+data/history.json
+history.json
+eval_set.json
+app.py
 # Models (large binary files, not committed)
 models/reranker_model.pt
 models/finetuned_embeddings/
@@ -33,14 +39,4 @@ docs/rag-project-spec.pdf
 .DS_Store
 # Virtual environment
 .venv/
-frontend/public/pdf.worker.min.mjs
-.DS_Store
-data/sources/
-data/chromadb/
-data/knowledge_graph.db*
-data/history.json
-history.json
-eval_set.json
-app.py
-.DS_Store
 frontend/public/pdf.worker.min.mjs

@@ -15,7 +15,7 @@ def embed(text: str) -> list[float]:
     return _ollama_embed(text)
 
 
-def embed_batch(texts: list[str], batch_size: int = 64) -> list[list[float]]:
+def embed_batch(texts: list[str]) -> list[list[float]]:
     """
     Embed a list of texts using the underlying Ollama client.
     Falls back to parallel per-item embedding if batch isn't supported.
@@ -23,9 +23,7 @@ def embed_batch(texts: list[str], batch_size: int = 64) -> list[list[float]]:
     Exposed here so ingestion and other high-throughput paths can call
     embeddings in batches and reduce RPC/IO overhead.
     """
-    # Delegate to the lower-level client implementation which implements
-    # batching with a safe fallback.
-    return _ollama_embed_batch(texts, batch_size=batch_size)
+    return _ollama_embed_batch(texts)
 
 
 def chunk_text(text: str) -> list[str]:

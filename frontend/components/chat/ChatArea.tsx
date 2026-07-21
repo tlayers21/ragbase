@@ -102,7 +102,7 @@ export function ChatArea({
         onClearAll={onClearAllSources}
       />
 
-      <ChatInput onSend={onSend} onStop={onStop} disabled={false} isStreaming={isStreaming} isLoading={isLoading} />
+      <ChatInput onSend={onSend} onStop={onStop} isStreaming={isStreaming} isLoading={isLoading} />
     </div>
   );
 }

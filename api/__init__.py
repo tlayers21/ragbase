@@ -3,6 +3,7 @@ from .documents import router as documents_router
 from .ingest import router as ingest_router
 from .query import router as query_router
 from .sessions import router as sessions_router
+from .settings import router as settings_router
 from .sources import router as sources_router
 from .title import router as title_router
 
@@ -12,6 +13,7 @@ __all__ = [
     "query_router",
     "documents_router",
     "sessions_router",
+    "settings_router",
     "sources_router",
     "title_router",
 ]

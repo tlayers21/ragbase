@@ -204,7 +204,9 @@ Only include clear factual entities and relationships. Output JSON only, no expl
 
     try:
         raw = "".join(generate_stream(prompt, model=get_model("summarize")))
-        raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        raw = (
+            raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        )  # models often fence JSON
         repaired = repair_json(raw)
         parsed = json.loads(repaired) if isinstance(repaired, str) else repaired
         return _validate_extracted(parsed, source)
@@ -232,6 +234,8 @@ def build_from_chunks(chunks: list[str], source: str, user_id: str) -> None:
 
             for entity in extracted.get("entities", []):
                 try:
+                    # INSERT OR IGNORE gives no signal on its own — compare
+                    # total_changes to count only rows actually inserted
                     changes_before = conn.total_changes
                     conn.execute(
                         f"INSERT OR IGNORE INTO nodes_{user_id} (entity, source) VALUES (?, ?)",

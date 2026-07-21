@@ -13,7 +13,6 @@ router = APIRouter(prefix="/compact", tags=["compact"])
 
 class CompactRequest(BaseModel):
     messages: list[dict]
-    user_id: str
 
 
 @router.post("")
@@ -45,5 +44,5 @@ async def compact_messages(req: CompactRequest):
         return response["message"]["content"]
 
     summary = await asyncio.to_thread(_call)
-    logger.info(f"Compacted {len(req.messages)} messages for user {req.user_id!r}")
+    logger.info(f"Compacted {len(req.messages)} messages")
     return {"summary": summary.strip()}

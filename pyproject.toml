@@ -3,6 +3,7 @@ name = "ragbase"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
+    "chromadb>=0.5.0",
     "json-repair>=0.30.0",
     "paddleocr>=3.7.0",
 ]

@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from config.logging import setup_logging
 from config.models import get_model
+from config.runtime import USER_ID
 from retrieval.embed import embed
 from retrieval.graph import has_graph
 from retrieval.pipeline import (
@@ -41,7 +42,6 @@ _SYSTEM_PROMPT = (
 
 class QueryRequest(BaseModel):
     question: str
-    user_id: str
     history: list[dict] = []
     source_filter: list[str] | None = None
 
@@ -60,10 +60,10 @@ async def query(req: QueryRequest):
     regenerates a fresh answer against the new question.
     """
     t0 = time.time()
-    logger.info(f"Query from user '{req.user_id}': {req.question}")
+    logger.info(f"Query: {req.question}")
 
     query_embedding = embed(req.question)
-    cached = get_cached_response(query_embedding, req.user_id)
+    cached = get_cached_response(USER_ID, query_embedding)
 
     if cached:
         # Cache hit: reuse retrieved context, generate a fresh answer for the new question.
@@ -74,7 +74,6 @@ async def query(req: QueryRequest):
         logger.info(f"Cache hit — response in {latency:.2f}s")
         send_telemetry(
             "query_rag",
-            req.user_id,
             {"latency": round(latency, 2), "question_len": len(req.question), "cache_hit": True},
         )
         return QueryResponse(answer=answer, sources=cached["sources"], scores=cached["scores"])
@@ -82,7 +81,7 @@ async def query(req: QueryRequest):
     # Cache miss: run full retrieval, then generate answer via generate_stream.
     retrieval = _pipeline.retrieve_context(
         question=req.question,
-        user_id=req.user_id,
+        user_id=USER_ID,
         history=req.history,
         source_filter=req.source_filter,
     )
@@ -90,21 +89,19 @@ async def query(req: QueryRequest):
     answer = "".join(generate_stream(prompt, system=_SYSTEM_PROMPT, model=get_model("answer")))
 
     set_cached_response(
-        req.question,
+        USER_ID,
         query_embedding,
         {
             "context": retrieval["context"],
             "sources": retrieval["sources"],
             "scores": retrieval["scores"],
         },
-        req.user_id,
     )
 
     latency = time.time() - t0
     logger.info(f"Query latency: {latency:.2f}s")
     send_telemetry(
         "query_rag",
-        req.user_id,
         {
             "latency": round(latency, 2),
             "question_len": len(req.question),
@@ -129,19 +126,19 @@ async def query_stream(req: QueryRequest) -> StreamingResponse:
     emitted before each blocking call so the connection does not time out.
     """
     t0 = time.time()
-    logger.info(f"Streaming query from user '{req.user_id}': {req.question}")
+    logger.info(f"Streaming query: {req.question}")
 
     async def event_stream() -> AsyncGenerator[str, None]:
         history_str = format_history(req.history)
 
         yield f"data: [STAGE]{json.dumps({'stage': 'retrieving_sources'})}\n\n"
-        if has_graph(req.user_id):
+        if has_graph(USER_ID):
             yield f"data: [STAGE]{json.dumps({'stage': 'traversing_graph'})}\n\n"
         yield "data: [HEARTBEAT]\n\n"
         docs, metas = await asyncio.to_thread(
             _pipeline.search_candidates,
             query=req.question,
-            user_id=req.user_id,
+            user_id=USER_ID,
             source_filter=req.source_filter,
         )
 
@@ -171,8 +168,7 @@ async def query_stream(req: QueryRequest) -> StreamingResponse:
         latency = time.time() - t0
         logger.info(f"Streaming query latency: {latency:.2f}s")
         send_telemetry(
-            "query",
-            req.user_id,
+            "query_rag",
             {"latency": round(latency, 2), "question_len": len(req.question)},
         )
 
@@ -189,7 +185,7 @@ async def query_direct(req: QueryRequest) -> StreamingResponse:
     event format as /query/stream (no [STAGE] events, empty [SOURCES]).
     """
     t0 = time.time()
-    logger.info(f"Direct query (no RAG) from user '{req.user_id}': {req.question}")
+    logger.info(f"Direct query (no RAG): {req.question}")
 
     def event_stream() -> Generator[str, None, None]:
         history_str = format_history(req.history)
@@ -206,7 +202,6 @@ async def query_direct(req: QueryRequest) -> StreamingResponse:
         logger.info(f"Direct query latency: {latency:.2f}s")
         send_telemetry(
             "query_direct",
-            req.user_id,
             {"latency": round(latency, 2), "question_len": len(req.question)},
         )
 

@@ -11,6 +11,10 @@ from config.settings import OLLAMA_VISION_NUM_CTX
 logger = setup_logging(__name__)
 
 
+# -- Response shape handling -------------------------------------------------
+# ollama-python has changed its embeddings response type across versions
+# (typed object, dict, or bare list). These extractors accept every known
+# shape so an Ollama upgrade doesn't silently break embedding.
 def _extract_single_embedding(response) -> list[float]:
     """Extract one embedding vector from Ollama response shapes."""
     if hasattr(response, "embedding"):
@@ -59,6 +63,7 @@ def _extract_batch_embeddings(response) -> list[list[float]]:
     return []
 
 
+# -- Public API --------------------------------------------------------------
 def embed(text: str) -> list[float]:
     """Embed text using the embedding model."""
     model = get_model("embed")
@@ -66,7 +71,7 @@ def embed(text: str) -> list[float]:
     return _extract_single_embedding(response)
 
 
-def embed_batch(texts: list[str], batch_size: int = 64) -> list[list[float]]:
+def embed_batch(texts: list[str]) -> list[list[float]]:
     """
     Embed a list of texts. Try a single batch call to Ollama first; if that
     fails, fall back to parallel single-item calls.
@@ -99,7 +104,7 @@ def embed_batch(texts: list[str], batch_size: int = 64) -> list[list[float]]:
             return None
 
     # Limit threads so we don't overwhelm the local model
-    max_workers = min(8, max(1, len(texts)))
+    max_workers = min(8, max(1, len(texts)))  # cap threads — local Ollama saturates quickly
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futures = {ex.submit(_single, i, t): i for i, t in enumerate(texts)}
         for fut in as_completed(futures):

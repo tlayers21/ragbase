@@ -1,27 +1,18 @@
 import json
 import random
 from pathlib import Path
-from typing import Any
 
 from config.logging import setup_logging
 from config.models import get_model
 from config.paths import EVAL_SET_PATH, TRAINING_PAIRS_PATH
 from config.settings import OLLAMA_URL
+from ml.common import to_chunk_index
 from retrieval.pipeline import RAGPipeline, configure_dspy
 
 logger = setup_logging(__name__)
 
 N_RESULTS = 10
 MAX_NEGATIVES_PER_POSITIVE = 5
-
-
-def _to_chunk_index(value: Any) -> int | None:
-    """Normalize chunk index values from JSON/metadata into int for comparison."""
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str) and value.isdigit():
-        return int(value)
-    return None
 
 
 def collect_training_pairs(
@@ -46,7 +37,7 @@ def collect_training_pairs(
     for i, item in enumerate(eval_set, start=1):
         question = item["question"]
         expected_source = item["source"]
-        expected_chunk_index = _to_chunk_index(item.get("correct_chunk_index"))
+        expected_chunk_index = to_chunk_index(item.get("correct_chunk_index"))
 
         rewritten_query = pipeline.rewriter(question=question, history="").rewritten_query
         docs, metas, _ = pipeline._retrieve(
@@ -54,7 +45,6 @@ def collect_training_pairs(
             original_question=question,
             user_id=user_id,
             source_filter=None,
-            history_str="",
         )
         docs = docs[:n_results]
         metas = metas[:n_results]
@@ -64,7 +54,7 @@ def collect_training_pairs(
 
         for doc, meta in zip(docs, metas):
             retrieved_source = meta.get("source")
-            retrieved_chunk_index = _to_chunk_index(meta.get("chunk_index"))
+            retrieved_chunk_index = to_chunk_index(meta.get("chunk_index"))
             is_correct = (
                 retrieved_source == expected_source
                 and retrieved_chunk_index == expected_chunk_index

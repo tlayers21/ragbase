@@ -83,7 +83,7 @@ def rerank(
             encoded = {k: v.to(device) for k, v in encoded.items()}
             output = model(**encoded)
             scores = output.logits.squeeze(-1).float().tolist()
-            if isinstance(scores, float):
+            if isinstance(scores, float):  # squeeze collapses a single pair to a scalar
                 scores = [scores]
         except Exception as e:
             logger.warning(f"Batch reranking failed ({e}), falling back to per-item loop")

@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { v4 as uuid } from "uuid";
 import { streamQuery, streamDirectQuery, generateChatTitle, shouldResetSessions, compactMessages } from "@/lib/api";
-import { getUserId } from "@/lib/api";
 import type { ChatSession, CitedChunk, Message, QueryMode } from "@/types";
 
 const TOKEN_LIMIT = 40960;
@@ -143,8 +142,7 @@ export function useChat() {
         const kept = sessionForCompact.messages.slice(-10);
         try {
           const summaryText = await compactMessages(
-            toCompact.map((m) => ({ role: m.role, content: m.content })),
-            getUserId()
+            toCompact.map((m) => ({ role: m.role, content: m.content }))
           );
           const summaryMsg: Message = {
             id: uuid(),

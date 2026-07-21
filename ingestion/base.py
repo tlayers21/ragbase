@@ -51,15 +51,14 @@ class BaseIngestor(ABC):
 
         stored = 0
         # Batch embeddings and batched upserts to ChromaDB for efficiency
-        batch_size = EMBED_BATCH_SIZE or 64
-        for batch_start in range(0, len(chunks), batch_size):
+        for batch_start in range(0, len(chunks), EMBED_BATCH_SIZE):
             if self.job_id and is_cancelled(self.job_id):
                 logger.info(f"Ingestion of '{source}' cancelled — stopping chunk processing")
                 raise IngestionCancelled(f"Ingestion of '{source}' was cancelled")
 
-            batch_chunks = chunks[batch_start : batch_start + batch_size]
+            batch_chunks = chunks[batch_start : batch_start + EMBED_BATCH_SIZE]
             try:
-                embeddings = embed_batch(batch_chunks, batch_size=batch_size)
+                embeddings = embed_batch(batch_chunks)
             except Exception as e:
                 logger.error(f"embed_batch failed for '{source}' at start {batch_start}: {e}")
                 embeddings = [None] * len(batch_chunks)
@@ -165,7 +164,6 @@ class BaseIngestor(ABC):
             self._update_job_status("done")
             send_telemetry(
                 "graph_complete",
-                self.user_id,
                 {
                     "source": source,
                     "entities": entities,
@@ -205,6 +203,7 @@ class BaseIngestor(ABC):
             if metadata:
                 extra_meta.update(metadata)
 
+            # -- Re-ingestion cleanup --------------------------------------
             # Only wipe existing data when re-ingesting a known source.
             # For brand-new sources this would be a no-op on ChromaDB but
             # would still exercise the graph DELETE path unnecessarily.
@@ -231,7 +230,6 @@ class BaseIngestor(ABC):
             clear_cache(self.user_id)
             send_telemetry(
                 "ingest",
-                self.user_id,
                 {
                     "source": source_name,
                     "chunks": stored,

@@ -6,7 +6,9 @@ from urllib.parse import parse_qs, urlparse
 from fastapi import APIRouter, Form, HTTPException, UploadFile
 
 from config.logging import setup_logging
+from config.models import get_model
 from config.paths import SOURCES_DIR
+from config.runtime import USER_ID
 from ingestion.queue import (
     cancel_job,
     clear_completed,
@@ -15,6 +17,7 @@ from ingestion.queue import (
     enqueue_url,
     get_status,
 )
+from utils.ollama_client import generate_stream
 
 logger = setup_logging(__name__)
 router = APIRouter(prefix="/ingest", tags=["ingest"])
@@ -25,8 +28,8 @@ def _slugify(text: str) -> str:
     return re.sub(r"\s+", "_", text.strip())[:100]
 
 
-def _save_source_file(user_id: str, source: str, suffix: str, data: bytes) -> None:
-    dest_dir = SOURCES_DIR / user_id
+def _save_source_file(source: str, suffix: str, data: bytes) -> None:
+    dest_dir = SOURCES_DIR / USER_ID
     dest_dir.mkdir(parents=True, exist_ok=True)
     (dest_dir / f"{source}{suffix}").write_bytes(data)
 
@@ -35,17 +38,16 @@ def _save_source_file(user_id: str, source: str, suffix: str, data: bytes) -> No
 async def ingest_file(
     file: UploadFile,
     source: str = Form(...),
-    user_id: str = Form(...),
 ):
     """Upload a file for ingestion. Returns a job ID immediately."""
     file_bytes = await file.read()
     suffix = Path(file.filename or "").suffix.lower() or ".bin"
-    _save_source_file(user_id, source, suffix, file_bytes)
+    _save_source_file(source, suffix, file_bytes)
     job_id = enqueue(
         file_bytes=file_bytes,
         filename=file.filename,
         source=source,
-        user_id=user_id,
+        user_id=USER_ID,
     )
     return {"job_id": job_id, "status": "queued"}
 
@@ -53,7 +55,6 @@ async def ingest_file(
 @router.post("/url")
 async def ingest_url(
     url: str = Form(...),
-    user_id: str = Form(...),
 ):
     """Ingest a YouTube URL. Fetches video title via yt-dlp. Returns a job ID immediately."""
 
@@ -86,7 +87,7 @@ async def ingest_url(
     if not source:
         source = _video_id_fallback()
 
-    job_id = enqueue_url(url=url, source=source, user_id=user_id)
+    job_id = enqueue_url(url=url, source=source, user_id=USER_ID)
     return {"job_id": job_id, "status": "queued", "source": source}
 
 
@@ -94,31 +95,24 @@ async def ingest_url(
 async def ingest_text(
     text: str = Form(...),
     source: str = Form(...),
-    user_id: str = Form(...),
 ):
     """Ingest raw pasted text. Returns a job ID immediately."""
-    _save_source_file(user_id, source, ".txt", text.encode())
-    job_id = enqueue_text(text=text, source=source, user_id=user_id)
+    _save_source_file(source, ".txt", text.encode())
+    job_id = enqueue_text(text=text, source=source, user_id=USER_ID)
     return {"job_id": job_id, "status": "queued"}
 
 
 @router.post("/generate_title")
 async def generate_title(text: str = Form(...)):
     """Generate a short 2-5 word title for ingested text using the fast LLM."""
-    import ollama
-
-    from config.models import get_model
-
-    excerpt = text[:500]
     prompt = (
         "Generate a short 2-5 word title for this text. "
         "Reply with only the title, no punctuation, no quotes.\n\n"
-        f"{excerpt}"
+        f"{text[:500]}"
     )
 
     def _call() -> str:
-        resp = ollama.generate(model=get_model("title"), prompt=prompt)
-        return resp["response"].strip()
+        return "".join(generate_stream(prompt, model=get_model("title"))).strip()
 
     try:
         title = await asyncio.to_thread(_call)

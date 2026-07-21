@@ -1,3 +1,4 @@
+from analysis.common import parse_verdict, update_chunk_metadata
 from config.logging import setup_logging
 from utils.chromadb_client import get_collection
 from utils.ollama_client import generate_stream
@@ -25,51 +26,12 @@ Be conservative - only flag clear factual errors, not opinions or uncertain clai
 
     try:
         raw = "".join(generate_stream(prompt))
-        verdict = "OK"
-        reason = "No issues found."
-
-        for line in raw.strip().split("\n"):
-            if line.startswith("VERDICT:"):
-                verdict = line.replace("VERDICT:", "").strip()
-            elif line.startswith("REASON:"):
-                reason = line.replace("REASON:", "").strip()
-
-        is_flagged = verdict == "FLAGGED"
-        return is_flagged, reason
+        verdict, reason = parse_verdict(raw, "OK", "No issues found.")
+        return verdict == "FLAGGED", reason
 
     except Exception as e:
         logger.error(f"Fact check failed: {e}")
         return False, "Fact check could not be completed."
-
-
-def _update_chunk_flag(
-    source: str,
-    chunk_index: int,
-    flagged: bool,
-    reason: str,
-    user_id: str,
-) -> None:
-    """Update fact-check metadata for a chunk in ChromaDB."""
-    try:
-        collection = get_collection(user_id)
-        results = collection.get(
-            where={"$and": [{"source": source}, {"chunk_index": chunk_index}]},
-            include=["metadatas"],
-        )
-        if not results["ids"]:
-            return
-
-        chunk_id = results["ids"][0]
-        existing_meta = results["metadatas"][0]
-        updated_meta = {
-            **existing_meta,
-            "flagged": flagged,
-            "flag_reason": reason,
-        }
-        collection.update(ids=[chunk_id], metadatas=[updated_meta])
-
-    except Exception as e:
-        logger.error(f"Failed to update fact-check flag for chunk {chunk_index} of '{source}': {e}")
 
 
 def check_source_facts(source: str, user_id: str) -> list[dict]:
@@ -100,7 +62,9 @@ def check_source_facts(source: str, user_id: str) -> list[dict]:
         if is_flagged:
             flagged_count += 1
 
-        _update_chunk_flag(source, chunk_index, is_flagged, reason, user_id)
+        update_chunk_metadata(
+            source, chunk_index, {"flagged": is_flagged, "flag_reason": reason}, user_id
+        )
         output.append(
             {
                 "chunk_index": chunk_index,

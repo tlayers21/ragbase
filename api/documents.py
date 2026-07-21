@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from analysis.contradiction import find_contradictions
 from analysis.fact_check import check_source_facts
 from config.logging import setup_logging
+from config.runtime import USER_ID
 from ingestion.helpers import delete_source
 from utils.chromadb_client import get_collection
 
@@ -31,9 +32,9 @@ class ChunkDetail(BaseModel):
 
 
 @router.get("/", response_model=list[SourceSummary])
-async def list_documents(user_id: str):
-    """List all sources for a user with summary info."""
-    collection = get_collection(user_id)
+async def list_documents():
+    """List all sources with summary info."""
+    collection = get_collection(USER_ID)
     results = await asyncio.to_thread(lambda: collection.get(include=["metadatas"]))
 
     # results["metadatas"] can be None when the collection is empty in some
@@ -64,9 +65,9 @@ async def list_documents(user_id: str):
 
 
 @router.get("/{source}", response_model=list[ChunkDetail])
-async def get_document(source: str, user_id: str):
+async def get_document(source: str):
     """Get all chunks for a specific source."""
-    collection = get_collection(user_id)
+    collection = get_collection(USER_ID)
     results = await asyncio.to_thread(
         lambda: collection.get(where={"source": source}, include=["documents", "metadatas"])
     )
@@ -93,9 +94,9 @@ async def get_document(source: str, user_id: str):
 
 
 @router.delete("/{source}")
-async def delete_document(source: str, user_id: str):
+async def delete_document(source: str):
     """Delete a source and all its chunks, summary, and graph data."""
-    deleted = await asyncio.to_thread(lambda: delete_source(source, user_id))
+    deleted = await asyncio.to_thread(lambda: delete_source(source, USER_ID))
 
     if deleted == 0:
         raise HTTPException(status_code=404, detail=f"Source '{source}' not found")
@@ -104,15 +105,15 @@ async def delete_document(source: str, user_id: str):
 
 
 @router.post("/{source}/check_facts")
-async def check_facts(source: str, user_id: str):
+async def check_facts(source: str):
     """Run the factual accuracy checker on a source."""
-    results = check_source_facts(source, user_id)
+    results = check_source_facts(source, USER_ID)
     flagged = sum(1 for r in results if r["flagged"])
     return {"status": "ok", "flagged": flagged, "total": len(results)}
 
 
 @router.post("/{source}/check_contradictions")
-async def check_contradictions(source: str, user_id: str):
+async def check_contradictions(source: str):
     """Run contradiction detection on a source against other sources."""
-    count = find_contradictions(source, user_id)
+    count = find_contradictions(source, USER_ID)
     return {"status": "ok", "contradictions_found": count}

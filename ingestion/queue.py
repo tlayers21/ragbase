@@ -90,7 +90,7 @@ def _requeue_recovered_jobs() -> int:
 
     for job in status:
         job_status = job.get("status")
-        if job_status in {"queued", "processing", "ingesting", "ingested", "building_graph"}:
+        if job_status in _ACTIVE_STATUSES:
             if job_status != "queued":
                 job["status"] = "queued"
                 changed = True

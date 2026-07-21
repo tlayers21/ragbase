@@ -7,12 +7,11 @@ import { cn } from "@/lib/utils";
 interface ChatInputProps {
   onSend: (content: string) => void;
   onStop?: () => void;
-  disabled?: boolean;
   isStreaming?: boolean;
   isLoading?: boolean;
 }
 
-export function ChatInput({ onSend, onStop, disabled, isStreaming, isLoading }: ChatInputProps) {
+export function ChatInput({ onSend, onStop, isStreaming, isLoading }: ChatInputProps) {
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 

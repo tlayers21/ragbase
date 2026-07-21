@@ -5,6 +5,7 @@ from fastapi.responses import FileResponse, Response
 
 from config.logging import setup_logging
 from config.paths import SOURCES_DIR
+from config.runtime import USER_ID
 
 logger = setup_logging(__name__)
 router = APIRouter(prefix="/sources", tags=["sources"])
@@ -27,11 +28,11 @@ _KNOWN_MIME: dict[str, str] = {
 
 
 @router.api_route("/{source}/file", methods=["GET", "HEAD"])
-async def get_source_file(source: str, user_id: str, request: Request):
+async def get_source_file(source: str, request: Request):
     """Serve the stored original file for a source. HEAD is supported for content-type sniffing."""
-    source_dir = SOURCES_DIR / user_id
+    source_dir = SOURCES_DIR / USER_ID
     if not source_dir.exists():
-        raise HTTPException(status_code=404, detail="No stored files for this user")
+        raise HTTPException(status_code=404, detail="No stored source files")
 
     # Find the file matching this source name (any extension)
     matches = list(source_dir.glob(f"{source}.*"))
@@ -41,9 +42,7 @@ async def get_source_file(source: str, user_id: str, request: Request):
     path = matches[0]
     suffix = path.suffix.lower()
     media_type = (
-        _KNOWN_MIME.get(suffix)
-        or mimetypes.guess_type(str(path))[0]
-        or "application/octet-stream"
+        _KNOWN_MIME.get(suffix) or mimetypes.guess_type(str(path))[0] or "application/octet-stream"
     )
 
     if request.method == "HEAD":

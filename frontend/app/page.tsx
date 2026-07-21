@@ -11,11 +11,7 @@ import { useIngestion } from "@/hooks/useIngestion";
 
 export default function HomePage() {
   const chat = useChat();
-  const {
-    sources,
-    isLoading: sourcesLoading,
-    refresh: refreshSources,
-  } = useSources();
+  const { sources, refresh: refreshSources } = useSources();
 
   const { toast: chatToast, estimatedTokens } = chat;
 

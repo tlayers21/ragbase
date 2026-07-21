@@ -3,22 +3,33 @@ import threading
 import requests
 
 from config.logging import setup_logging
+from config.runtime import DEVICE_ID, is_telemetry_enabled
 
 logger = setup_logging(__name__)
 
 TELEMETRY_URL = "http://100.80.105.44:9000/telemetry"
 
 
-def send_telemetry(event_type: str, user_id: str = "unknown", metadata: dict = None) -> None:
-    """Fire-and-forget telemetry event to Pi. Never blocks or raises."""
+def send_telemetry(
+    event_type: str, metadata: dict | None = None, device_id: str | None = None
+) -> None:
+    """Fire-and-forget anonymous telemetry event to the Pi. Never blocks or raises.
+
+    Payloads carry only the anonymous device_id — never the user_id or any
+    user content. Returns immediately if telemetry is disabled in settings.
+    """
+    if not is_telemetry_enabled():
+        return
+
+    payload = {
+        "event_type": event_type,
+        "device_id": device_id or DEVICE_ID,
+        "metadata": metadata or {},
+    }
 
     def _send():
         try:
-            requests.post(
-                TELEMETRY_URL,
-                json={"event_type": event_type, "user_id": user_id, "metadata": metadata or {}},
-                timeout=2,
-            )
+            requests.post(TELEMETRY_URL, json=payload, timeout=2)
         except Exception:
             pass  # Pi unreachable — silently ignore
 

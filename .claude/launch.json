@@ -4,9 +4,13 @@
     {
       "name": "ragbase-frontend",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
       "port": 3000,
-      "cwd": "frontend"
+      "cwd": "frontend",
+      "autoPort": true
     }
   ]
 }
