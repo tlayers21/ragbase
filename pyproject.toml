@@ -29,3 +29,7 @@ select = ["E", "F", "I", "W"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["api", "analysis", "config", "ingestion", "ml", "retrieval", "utils"]
+
+[tool.setuptools.packages.find]
+include = ["api*", "config*", "ingestion*", "retrieval*", "analysis*", "utils*", "ml*"]
+exclude = ["frontend*", "data*", "logs*", "scripts*", "docs*"]

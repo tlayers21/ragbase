@@ -57,12 +57,17 @@ if [[ "$MISSING" -eq 1 ]]; then
 fi
 
 # 3. Pull required Ollama models
+# 3. Pull required Ollama models
 echo ""
-echo "Pulling Ollama models (this may take a while)..."
-ollama pull qwen3
-ollama pull qwen2.5:3b
-ollama pull qwen2.5vl
-ollama pull bge-m3
+echo "Checking Ollama models..."
+for model in qwen3 qwen2.5:3b qwen2.5vl bge-m3; do
+    if ollama list | grep -q "^$model"; then
+        echo "$model already installed, skipping"
+    else
+        echo "Pulling $model..."
+        ollama pull "$model"
+    fi
+done
 
 # 4. Python environment
 echo ""
@@ -71,7 +76,7 @@ if ! command -v uv > /dev/null 2>&1; then
     echo "Installing uv..."
     pip install uv --break-system-packages
 fi
-uv venv .venv
+uv venv .venv --clear
 source .venv/bin/activate
 uv pip install -e .
 # Pin huggingface-hub below 1.0 to prevent transformers breakage
