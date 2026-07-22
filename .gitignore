@@ -41,3 +41,4 @@ docs/rag-project-spec.pdf
 .venv/
 frontend/public/pdf.worker.min.mjs
 ragbase.egg-info/
+.frontend_build_hash
