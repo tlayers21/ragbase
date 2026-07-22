@@ -40,3 +40,4 @@ docs/rag-project-spec.pdf
 # Virtual environment
 .venv/
 frontend/public/pdf.worker.min.mjs
+ragbase.egg-info/

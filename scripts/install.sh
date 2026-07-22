@@ -85,7 +85,7 @@ uv pip install "huggingface-hub<1.0"
 # 5. Frontend
 echo ""
 echo "Installing frontend dependencies..."
-cd frontend && npm install && cd ..
+cd frontend && npm install && npm run build && cd ..
 
 # 6. Required directories
 mkdir -p data/sources data/chromadb logs
