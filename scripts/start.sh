@@ -11,7 +11,7 @@ LOCAL=$(git rev-parse --short HEAD)
 if [ -n "$LATEST" ] && [ "$LATEST" != "$LOCAL" ]; then
     echo "Update available ($LOCAL → $LATEST), pulling..."
     git pull origin main
-    .venv/bin/python3 -m uv pip install -e . --quiet 2>/dev/null || true
+    uv pip install -e . --python .venv/bin/python3 --quiet 2>/dev/null || true
     cd frontend && npm install --silent && cd ..
 else
     echo "Already up to date ($LOCAL)"
