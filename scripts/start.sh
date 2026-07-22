@@ -4,30 +4,26 @@ echo "=== Starting RAGbase ==="
 
 # 0. Check for updates
 echo "Checking for updates..."
-LATEST=$(curl -s https://api.github.com/repos/tlayers21/ragbase/commits/main \
-    | python3 -c "import sys,json; print(json.load(sys.stdin)['sha'][:7])" 2>/dev/null)
+LATEST=$(.venv/bin/python3 -c "import urllib.request,json; data=json.loads(urllib.request.urlopen('https://api.github.com/repos/tlayers21/ragbase/commits/main').read()); print(data['sha'][:7])" 2>/dev/null)
 LOCAL=$(git rev-parse --short HEAD)
 
 if [ -n "$LATEST" ] && [ "$LATEST" != "$LOCAL" ]; then
     echo "Update available ($LOCAL → $LATEST), pulling..."
     git pull origin main
-    # Reinstall dependencies in case pyproject.toml changed
-    source .venv/bin/activate
-    uv pip install -e . --quiet
+    .venv/bin/python3 -m uv pip install -e . --quiet 2>/dev/null || true
     cd frontend && npm install --silent && cd ..
 else
     echo "Already up to date ($LOCAL)"
 fi
 
-# 1. Activate venv and start backend
+# 1. Start backend using venv Python directly
 echo "Starting backend..."
-source .venv/bin/activate
-python3 -m uvicorn main:app --port 8001 &
+.venv/bin/python3 -m uvicorn main:app --port 8001 &
 BACKEND_PID=$!
 echo "Backend started (PID $BACKEND_PID)"
 
 # 2. Build frontend if changed, then start
-FRONTEND_HASH=$(find frontend/src frontend/app frontend/components frontend/lib frontend/hooks -type f 2>/dev/null | sort | xargs md5 2>/dev/null | md5)
+FRONTEND_HASH=$(find frontend/app frontend/components frontend/lib frontend/hooks -type f 2>/dev/null | sort | xargs md5 2>/dev/null | md5)
 LAST_HASH_FILE=".frontend_build_hash"
 
 if [ ! -f "$LAST_HASH_FILE" ] || [ "$FRONTEND_HASH" != "$(cat $LAST_HASH_FILE)" ]; then
@@ -64,6 +60,6 @@ fi
 
 echo "Press Ctrl+C to stop all services"
 
-# 4. Wait and clean up on exit
+# 4. Clean up on exit
 trap "echo ''; echo 'Stopping RAGbase...'; kill $BACKEND_PID $FRONTEND_PID 2>/dev/null; echo 'Stopped.'; exit" INT TERM
 wait
