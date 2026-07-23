@@ -114,6 +114,12 @@ body {
   outline-offset: 2px;
 }
 
+/* Chat input textarea: focus ring lives on the outer container only */
+textarea:focus {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
 /* Animated loading dots */
 @keyframes bounce-dot {
   0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }

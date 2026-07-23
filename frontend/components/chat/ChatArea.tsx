@@ -6,7 +6,7 @@ import { MessageBubble } from "./MessageBubble";
 import { ChatInput } from "./ChatInput";
 import { SourceFilter } from "./SourceFilter";
 import { ModelSelector } from "./ModelSelector";
-import type { ChatSession, SourceSummary } from "@/types";
+import type { ChatSession, PendingAttachment, SourceSummary } from "@/types";
 
 interface ChatAreaProps {
   session: ChatSession | null;
@@ -19,7 +19,7 @@ interface ChatAreaProps {
   onToggleSource: (source: string) => void;
   onSelectAllSources: () => void;
   onClearAllSources: () => void;
-  onSend: (content: string) => void;
+  onSend: (content: string, attachments: PendingAttachment[]) => void;
   onStop: () => void;
   onOpenSourcesModal: () => void;
 }

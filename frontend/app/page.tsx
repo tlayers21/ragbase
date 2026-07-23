@@ -8,6 +8,7 @@ import { SourcesModal } from "@/components/sources/SourcesModal";
 import { useChat } from "@/hooks/useChat";
 import { useSources } from "@/hooks/useSources";
 import { useIngestion } from "@/hooks/useIngestion";
+import type { PendingAttachment } from "@/types";
 
 export default function HomePage() {
   const chat = useChat();
@@ -115,12 +116,12 @@ export default function HomePage() {
   const isDirectMode = selectedSources.size === 0;
 
   const handleSend = useCallback(
-    (content: string) => {
+    (content: string, attachments: PendingAttachment[]) => {
       const filter =
         !isDirectMode && sources.length > 0 && selectedSources.size < sources.length
           ? Array.from(selectedSources)
           : null;
-      chat.sendMessage(content, filter, isDirectMode);
+      chat.sendMessage(content, filter, isDirectMode, attachments);
     },
     [chat, selectedSources, sources, isDirectMode]
   );

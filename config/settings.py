@@ -29,6 +29,9 @@ WANDB_PROJECT = "ragbase"
 # -- Embedding/batching -------------------------------------------------------
 EMBED_BATCH_SIZE = 64
 
+# -- Chat attachments (ephemeral, never ingested/indexed) ---------------------
+ATTACHMENT_TEXT_MAX_CHARS = 8000
+
 # -- Supported file types ------------------------------------------------------
 SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".tiff"}
 SUPPORTED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}

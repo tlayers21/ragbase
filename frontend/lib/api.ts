@@ -1,5 +1,5 @@
 import { DEFAULT_API_URL } from "@/lib/config";
-import type { SourceSummary, IngestionStatus } from "@/types";
+import type { AttachmentType, SourceSummary, IngestionStatus } from "@/types";
 
 // Read runtime overrides from localStorage (set on the settings page).
 function getBaseUrl(): string {
@@ -90,16 +90,25 @@ export async function deleteSource(source: string): Promise<void> {
 
 // ── Query ────────────────────────────────────────────────────────────────────
 
+export interface AttachmentResult {
+  type: AttachmentType;
+  name: string;
+  description: string;
+}
+
 export interface StreamQueryHandlers {
   onStage?: (stage: string) => void;
   onToken: (token: string) => void;
   onSources: (sources: string[], scores: number[], chunks: import("@/types").CitedChunk[]) => void;
+  /** Fired once for /query/with_attachments after attachments are processed server-side. */
+  onAttachments?: (attachments: AttachmentResult[]) => void;
   onDone: () => void;
 }
 
 // Parses SSE frames of the form "data: {token}\n\n", "data: [STAGE]{json}\n\n"
-// progress events, a final "data: [SOURCES]{json}\n\n" citation event, and
-// "data: [DONE]\n\n". Shared by streamQuery() and streamDirectQuery().
+// progress events, "data: [ATTACHMENTS]{json}\n\n" (attachment query only), a
+// final "data: [SOURCES]{json}\n\n" citation event, and "data: [DONE]\n\n".
+// Shared by streamQuery(), streamDirectQuery(), and streamAttachmentQuery().
 async function consumeQueryStream(
   res: Response,
   handlers: StreamQueryHandlers,
@@ -138,6 +147,15 @@ async function consumeQueryStream(
           handlers.onSources(sources, scores, chunks);
         } catch {
           // ignore malformed sources payload
+        }
+        continue;
+      }
+      if (payload.startsWith("[ATTACHMENTS]")) {
+        try {
+          const { attachments } = JSON.parse(payload.slice("[ATTACHMENTS]".length));
+          handlers.onAttachments?.(attachments);
+        } catch {
+          // ignore malformed attachments payload
         }
         continue;
       }
@@ -193,6 +211,45 @@ export async function streamDirectQuery(
       history,
       source_filter: null,
     }),
+    signal,
+  });
+  await consumeQueryStream(res, handlers, signal);
+}
+
+export interface AttachmentPayload {
+  type: AttachmentType;
+  name: string;
+  /** Present for image/pdf and file-picker text attachments. */
+  file?: File;
+  /** Present for pasted-text attachments, which have no underlying File. */
+  text?: string;
+}
+
+// Same RAG/direct routing as streamQuery/streamDirectQuery (controlled by
+// isDirect) but sends attachments as multipart and expects an extra
+// [ATTACHMENTS] event before generation begins.
+export async function streamAttachmentQuery(
+  question: string,
+  history: { role: string; content: string }[],
+  sourceFilter: string[] | null,
+  isDirect: boolean,
+  attachments: AttachmentPayload[],
+  handlers: StreamQueryHandlers,
+  signal?: AbortSignal
+): Promise<void> {
+  const form = new FormData();
+  form.append("question", question);
+  form.append("history", JSON.stringify(history));
+  form.append("source_filter", sourceFilter ? JSON.stringify(sourceFilter) : "");
+  form.append("is_direct", String(isDirect));
+  for (const a of attachments) {
+    const file = a.file ?? new File([a.text ?? ""], a.name, { type: "text/plain" });
+    form.append("attachments", file, a.name);
+  }
+
+  const res = await fetch(`${getBaseUrl()}/query/with_attachments`, {
+    method: "POST",
+    body: form,
     signal,
   });
   await consumeQueryStream(res, handlers, signal);

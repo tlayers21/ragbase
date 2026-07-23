@@ -4,10 +4,10 @@ import { useState, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import { Copy, Check as CheckIcon, X } from "lucide-react";
+import { Copy, Check as CheckIcon, X, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { CURRENT_MODEL } from "./ModelSelector";
-import type { CitedChunk, Message } from "@/types";
+import type { CitedChunk, Message, MessageAttachment } from "@/types";
 
 function CopyButton({ text, className }: { text: string; className?: string }) {
   const [copied, setCopied] = useState(false);
@@ -45,6 +45,8 @@ const STAGE_LABELS: Record<string, string> = {
   traversing_graph: "Traversing knowledge graph…",
   reranking: "Reranking chunks…",
   generating: "Generating answer…",
+  processing_attachments: "Processing attachments…",
+  stopped: "Stopped.",
 };
 
 function ChunksModal({ chunks, onClose }: { chunks: CitedChunk[]; onClose: () => void }) {
@@ -95,6 +97,25 @@ function ChunksModal({ chunks, onClose }: { chunks: CitedChunk[]; onClose: () =>
   );
 }
 
+// Same subtle pill styling as the "Sources used" button. Hover shows the full
+// VLM description / extracted text via native title tooltip — no extra modal needed.
+function AttachmentChip({ attachment }: { attachment: MessageAttachment }) {
+  return (
+    <div
+      className="inline-flex max-w-[160px] items-center gap-1.5 rounded-full border border-border bg-surface px-2.5 py-1 text-[11px] text-foreground-muted"
+      title={attachment.description || "Processing…"}
+    >
+      {attachment.type === "image" && attachment.previewUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={attachment.previewUrl} alt="" className="h-4 w-4 flex-shrink-0 rounded object-cover" />
+      ) : (
+        <FileText className="h-3 w-3 flex-shrink-0" />
+      )}
+      <span className="truncate">{attachment.name}</span>
+    </div>
+  );
+}
+
 function SummaryBlock({ message }: { message: Message }) {
   return (
     <div className="flex justify-center">
@@ -109,9 +130,15 @@ function SummaryBlock({ message }: { message: Message }) {
 }
 
 function ThinkingIndicator({ stage }: { stage?: string }) {
+  const isStopped = stage === "stopped";
   return (
     <div className="flex items-center gap-2 h-5">
-      <span className="pulse-dot h-2 w-2 rounded-full bg-foreground-muted flex-shrink-0" />
+      <span
+        className={cn(
+          "h-2 w-2 rounded-full bg-foreground-muted flex-shrink-0",
+          isStopped ? "opacity-60" : "pulse-dot"
+        )}
+      />
       {stage && (
         <span className="text-xs text-foreground-muted">{STAGE_LABELS[stage] ?? stage}</span>
       )}
@@ -156,6 +183,13 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           <div className="rounded-2xl rounded-tr-sm bg-surface border border-border px-4 py-2.5 text-sm text-foreground whitespace-pre-wrap">
             {message.content}
           </div>
+          {message.attachments && message.attachments.length > 0 && (
+            <div className="mt-1.5 flex flex-wrap justify-end gap-1.5">
+              {message.attachments.map((a, i) => (
+                <AttachmentChip key={i} attachment={a} />
+              ))}
+            </div>
+          )}
           <div
             className={cn(
               "flex items-center justify-end gap-1.5 mt-1 transition-opacity duration-150",

@@ -2,8 +2,16 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { v4 as uuid } from "uuid";
-import { streamQuery, streamDirectQuery, generateChatTitle, shouldResetSessions, compactMessages } from "@/lib/api";
-import type { ChatSession, CitedChunk, Message, QueryMode } from "@/types";
+import {
+  streamQuery,
+  streamDirectQuery,
+  streamAttachmentQuery,
+  generateChatTitle,
+  shouldResetSessions,
+  compactMessages,
+  type AttachmentPayload,
+} from "@/lib/api";
+import type { ChatSession, CitedChunk, Message, MessageAttachment, PendingAttachment, QueryMode } from "@/types";
 
 const TOKEN_LIMIT = 40960;
 const COMPACT_THRESHOLD = 0.9;
@@ -13,6 +21,21 @@ function estimateTokens(messages: Message[]): number {
   const textChars = messages.reduce((sum, m) => sum + m.role.length + m.content.length, 0);
   const exchangeCount = Math.ceil(messages.length / 2);
   return Math.floor(textChars / 4) + exchangeCount * RAG_TOKENS_PER_EXCHANGE;
+}
+
+// Folds a past message's attachment descriptions into its history content so
+// follow-up questions retain attachment context — descriptions only exist on
+// the frontend's Message objects, never re-sent as files on later turns.
+function historyContent(m: Message): string {
+  if (!m.attachments || m.attachments.length === 0) return m.content;
+  const blocks = m.attachments
+    .map((a) => `[Attached ${a.type} '${a.name}': ${a.description}]`)
+    .join("\n");
+  return `${blocks}\n\n${m.content}`;
+}
+
+function toAttachmentPayloads(attachments: PendingAttachment[]): AttachmentPayload[] {
+  return attachments.map((a) => ({ type: a.type, name: a.name, file: a.file, text: a.text }));
 }
 
 const STORAGE_KEY = "ragbase_sessions";
@@ -107,7 +130,8 @@ export function useChat() {
     async (
       content: string,
       sourceFilter: string[] | null = null,
-      isDirect: boolean = false
+      isDirect: boolean = false,
+      attachments: PendingAttachment[] = []
     ) => {
       if (isLoadingRef.current) {
         abortRef.current?.abort();
@@ -165,18 +189,31 @@ export function useChat() {
         }
       }
 
+      // Optimistic attachment metadata so chips render immediately; `description`
+      // is filled in once the backend's [ATTACHMENTS] event arrives mid-stream.
+      const optimisticAttachments: MessageAttachment[] | undefined =
+        attachments.length > 0
+          ? attachments.map((a) => ({
+              type: a.type,
+              name: a.name,
+              description: "",
+              previewUrl: a.previewUrl,
+            }))
+          : undefined;
+
       const userMessage: Message = {
         id: uuid(),
         role: "user",
         content,
         timestamp: Date.now(),
+        attachments: optimisticAttachments,
       };
 
       const historySession = currentSessions.find((s) => s.id === sessionId);
       const isFirstMessage = (historySession?.messages ?? []).length === 0;
       const history = (historySession?.messages ?? []).map((m) => ({
         role: m.role,
-        content: m.content,
+        content: historyContent(m),
       }));
 
       const assistantId = uuid();
@@ -267,6 +304,29 @@ export function useChat() {
           assistantScores = scores;
           assistantChunks = chunks;
         },
+        onAttachments: (results: { type: string; name: string; description: string }[]) => {
+          // Patches descriptions onto the USER message (not the assistant reply) —
+          // relies on the backend processing attachments in the same order sent.
+          setSessions((prev) =>
+            prev.map((s) => {
+              if (s.id !== sessionId) return s;
+              return {
+                ...s,
+                messages: s.messages.map((m) =>
+                  m.id === userMessage.id
+                    ? {
+                        ...m,
+                        attachments: m.attachments?.map((a, i) => ({
+                          ...a,
+                          description: results[i]?.description ?? a.description,
+                        })),
+                      }
+                    : m
+                ),
+              };
+            })
+          );
+        },
         onDone: () => {
           const latencyMs =
             firstTokenTime !== null ? Date.now() - firstTokenTime : undefined;
@@ -300,7 +360,17 @@ export function useChat() {
       };
 
       try {
-        if (isDirect) {
+        if (attachments.length > 0) {
+          await streamAttachmentQuery(
+            content,
+            history,
+            sourceFilter,
+            isDirect,
+            toAttachmentPayloads(attachments),
+            handlers,
+            controller.signal
+          );
+        } else if (isDirect) {
           await streamDirectQuery(content, history, handlers, controller.signal);
         } else {
           await streamQuery(content, history, sourceFilter, handlers, controller.signal);
@@ -309,6 +379,33 @@ export function useChat() {
         // Abort is intentional — keep whatever content was streamed
         if ((err as { name?: string }).name === "AbortError") {
           handlers.onDone();
+          // Briefly show "Stopped." in place of the stage indicator, then clear it.
+          setSessions((prev) =>
+            prev.map((s) => {
+              if (s.id !== sessionId) return s;
+              return {
+                ...s,
+                messages: s.messages.map((m) =>
+                  m.id === assistantId ? { ...m, stage: "stopped" } : m
+                ),
+              };
+            })
+          );
+          setTimeout(() => {
+            setSessions((prev) =>
+              prev.map((s) => {
+                if (s.id !== sessionId) return s;
+                return {
+                  ...s,
+                  messages: s.messages.map((m) =>
+                    m.id === assistantId && m.stage === "stopped"
+                      ? { ...m, stage: undefined }
+                      : m
+                  ),
+                };
+              })
+            );
+          }, 1500);
           return;
         }
         setError(err instanceof Error ? err.message : "Request failed");

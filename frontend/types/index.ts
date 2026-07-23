@@ -33,6 +33,19 @@ export interface CitedChunk {
 
 export type QueryMode = "rag" | "direct";
 
+export type AttachmentType = "image" | "pdf" | "text";
+
+/** Attachment metadata stored on a sent user message. `description` is the VLM
+ * output (image) or extracted text (pdf/text) — re-sent in history on every
+ * subsequent turn so follow-up questions retain the attachment's context. */
+export interface MessageAttachment {
+  type: AttachmentType;
+  name: string;
+  description: string;
+  /** Client-side object URL for image thumbnails only — not persisted across reloads. */
+  previewUrl?: string;
+}
+
 export interface Message {
   id: string;
   role: MessageRole;
@@ -40,6 +53,7 @@ export interface Message {
   sources?: string[];
   scores?: number[];
   chunks?: CitedChunk[];
+  attachments?: MessageAttachment[];
   timestamp: number;
   /** Which endpoint served this response — set once streaming completes. */
   mode?: QueryMode;
@@ -60,4 +74,24 @@ export interface ChatSession {
   createdAt: number;
   updatedAt: number;
   pinned?: boolean;
+}
+
+// ── Chat input attachments (pre-send, client-only) ────────────────────────────
+
+/** An attachment staged in ChatInput before sending — not yet processed by the backend. */
+export interface PendingAttachment {
+  id: string;
+  type: AttachmentType;
+  name: string;
+  /** Present for image/pdf and file-picker text attachments. */
+  file?: File;
+  /** Present for pasted-text attachments, which have no underlying File. */
+  text?: string;
+  /** Image thumbnail object URL. */
+  previewUrl?: string;
+  /** PDF only, filled in asynchronously once pdfjs finishes counting pages. */
+  pageCount?: number;
+  /** Text/pasted-text only. */
+  charCount?: number;
+  preview?: string;
 }

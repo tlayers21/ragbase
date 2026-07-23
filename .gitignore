@@ -42,5 +42,4 @@ docs/rag-project-spec.pdf
 frontend/public/pdf.worker.min.mjs
 ragbase.egg-info/
 .frontend_build_hash
-scripts/metrics.sh
-scripts/metrics.py
+scripts/metrics.ipynb
