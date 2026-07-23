@@ -182,7 +182,8 @@ class BaseIngestor(ABC):
         metadata: dict | None = None,
     ) -> int:
         """Full ingestion pipeline: extract -> chunk -> store -> summarize."""
-        source_path = Path(source_path)
+        if not str(source_path).startswith(("http://", "https://")):
+            source_path = Path(source_path)
         logger.info(f"Ingesting '{source_name}' for user '{self.user_id}'")
         self._update_job_status("ingesting")
 
