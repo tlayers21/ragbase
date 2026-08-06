@@ -1,7 +1,7 @@
 from rank_bm25 import BM25Okapi
 
 from config.logging import setup_logging
-from config.settings import MAX_FINAL_RESULTS, RRF_K, TOP_K_CANDIDATES
+from config.settings import MAX_FINAL_RESULTS, RRF_K, SUMMARY_DISTANCE_THRESHOLD, TOP_K_CANDIDATES
 from retrieval.embed import embed
 from utils.chromadb_client import get_collection, get_summary_collection
 
@@ -96,16 +96,17 @@ def search_summaries(
     metadatas = results["metadatas"][0]
     distances = results["distances"][0]
 
-    DISTANCE_THRESHOLD = 0.7
     filtered = [
-        meta["source"] for meta, dist in zip(metadatas, distances) if dist <= DISTANCE_THRESHOLD
+        meta["source"]
+        for meta, dist in zip(metadatas, distances)
+        if dist <= SUMMARY_DISTANCE_THRESHOLD
     ]
 
     if not filtered:
         filtered = [meta["source"] for meta in metadatas]
         logger.debug(
             f"Stage 1: all {len(metadatas)} results exceeded distance threshold "
-            f"{DISTANCE_THRESHOLD} — using unfiltered fallback"
+            f"{SUMMARY_DISTANCE_THRESHOLD} — using unfiltered fallback"
         )
 
     logger.debug(f"Stage 1 retrieved {len(filtered)} relevant sources: {filtered}")

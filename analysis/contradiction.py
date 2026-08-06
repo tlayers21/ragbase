@@ -1,5 +1,6 @@
 from analysis.common import parse_verdict, update_chunk_metadata
 from config.logging import setup_logging
+from config.models import get_model
 from retrieval.embed import embed
 from utils.chromadb_client import get_collection
 from utils.ollama_client import generate_stream
@@ -29,7 +30,7 @@ Only flag clear factual contradictions. Different levels of detail or
 different perspectives on the same topic are not contradictions."""
 
     try:
-        raw = "".join(generate_stream(prompt))
+        raw = "".join(generate_stream(prompt, model=get_model("contradiction")))
         verdict, reason = parse_verdict(raw, "NO_CONTRADICTION", "No contradiction found.")
         return verdict == "CONTRADICTION", reason
 

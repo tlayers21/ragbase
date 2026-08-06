@@ -2,9 +2,6 @@
 __pycache__/
 *.pyc
 *.pyo
-# Agent
-.github/
-.vscode/
 .ruff_cache/
 # Logs
 logs/
@@ -33,8 +30,6 @@ models/finetuned_embeddings/
 *_progress.json
 # W&B
 wandb/
-# Docs (generated spec PDF, keep out of repo)
-docs/rag-project-spec.pdf
 # macOS
 .DS_Store
 # Virtual environment

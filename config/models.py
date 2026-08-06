@@ -17,6 +17,7 @@ def get_model(task: str) -> str:
         "summarize": MODEL_FAST,
         "text_cleanup": MODEL_FAST,
         "title": MODEL_FAST,
+        "entity_extraction": MODEL_FAST,
         "vision_handwrite": MODEL_VISION_HEAVY,
         "vision_diagram": MODEL_VISION_HEAVY,
         "vision_simple": MODEL_VISION_FAST,

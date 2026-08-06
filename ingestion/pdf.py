@@ -300,6 +300,9 @@ class PdfIngestor(BaseIngestor):
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             for element, _ in doc.iterate_items():
+                if self.job_id and is_cancelled(self.job_id):
+                    raise IngestionCancelled(f"Ingestion of '{source_name}' was cancelled")
+
                 try:
                     if hasattr(element, "image") and element.image is not None:
                         img_path = os.path.join(tmp_dir, f"img_{image_count}.png")

@@ -2,6 +2,7 @@ import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from config.logging import setup_logging
+from config.settings import MAX_FINAL_RESULTS
 
 logger = setup_logging(__name__)
 
@@ -47,7 +48,7 @@ def rerank(
     question: str,
     docs: list[str],
     metas: list[dict],
-    top_k: int = 5,
+    top_k: int = MAX_FINAL_RESULTS,
 ) -> tuple[list[str], list[dict], list[float]]:
     """
     Rerank retrieved chunks using BGE-Reranker-v2-m3 cross-encoder.

@@ -24,13 +24,13 @@ else
 fi
 
 if ! command -v python3 > /dev/null 2>&1; then
-    echo "MISSING: Python 3.11+ — install from https://python.org"
+    echo "MISSING: Python 3.13+ — install from https://python.org"
     MISSING=1
 else
     PY_MAJOR=$(python3 -c 'import sys; print(sys.version_info[0])')
     PY_MINOR=$(python3 -c 'import sys; print(sys.version_info[1])')
-    if [[ "$PY_MAJOR" -lt 3 || ( "$PY_MAJOR" -eq 3 && "$PY_MINOR" -lt 11 ) ]]; then
-        echo "MISSING: Python 3.11+ (found $PY_MAJOR.$PY_MINOR) — install from https://python.org"
+    if [[ "$PY_MAJOR" -lt 3 || ( "$PY_MAJOR" -eq 3 && "$PY_MINOR" -lt 13 ) ]]; then
+        echo "MISSING: Python 3.13+ (found $PY_MAJOR.$PY_MINOR) — install from https://python.org"
         MISSING=1
     else
         echo "Found Python $PY_MAJOR.$PY_MINOR"

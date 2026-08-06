@@ -51,7 +51,7 @@ async def lifespan(app: FastAPI):
             model = get_model(task)
             try:
                 if task == "embed":
-                    await asyncio.to_thread(_ollama.embeddings, model=model, prompt="hi")
+                    await asyncio.to_thread(_ollama.embed, model=model, input="hi")
                 else:
                     await asyncio.to_thread(_ollama.generate, model, "hi")
                 logger.info(f"  {task} ({model}) warmed up")
@@ -93,6 +93,7 @@ app.include_router(title_router)
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
 
 @app.get("/")
 async def root():

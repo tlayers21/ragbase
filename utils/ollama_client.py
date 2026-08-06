@@ -67,7 +67,7 @@ def _extract_batch_embeddings(response) -> list[list[float]]:
 def embed(text: str) -> list[float]:
     """Embed text using the embedding model."""
     model = get_model("embed")
-    response = ollama.embeddings(model=model, prompt=text)
+    response = ollama.embed(model=model, input=text)
     return _extract_single_embedding(response)
 
 
@@ -83,9 +83,9 @@ def embed_batch(texts: list[str]) -> list[list[float]]:
 
     model = get_model("embed")
 
-    # Try one-shot batch call (some Ollama versions accept list prompts)
+    # Try one-shot batch call
     try:
-        response = ollama.embeddings(model=model, prompt=texts)
+        response = ollama.embed(model=model, input=texts)
         embeddings = _extract_batch_embeddings(response)
         if len(embeddings) == len(texts):
             return embeddings
@@ -97,7 +97,7 @@ def embed_batch(texts: list[str]) -> list[list[float]]:
 
     def _single(i, txt):
         try:
-            response = ollama.embeddings(model=model, prompt=txt)
+            response = ollama.embed(model=model, input=txt)
             return _extract_single_embedding(response)
         except Exception as e:
             logger.error(f"embed_batch: single embed failed for idx={i}: {e}")

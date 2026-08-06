@@ -1,0 +1,30 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|Create",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'if git diff --name-only 2>/dev/null | grep -q \"\\.py$\"; then cd /Users/tommyayers/Projects/ragbase && source .venv/bin/activate && ruff format . && ruff check . --fix; fi'"
+          },
+          {
+            "type": "command",
+            "command": "bash -c 'if git diff --name-only 2>/dev/null | grep -qE \"\\.(ts|tsx)$\"; then cd /Users/tommyayers/Projects/ragbase/frontend && npx tsc --noEmit; fi'"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'file=\"$CLAUDE_TOOL_INPUT_PATH\"; case \"$file\" in data/*|frontend/.next/*|scripts/metrics*) echo \"BLOCKED: $file is protected\" && exit 1;; esac'"
+          }
+        ]
+      }
+    ]
+  }
+}

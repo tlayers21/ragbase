@@ -4,6 +4,7 @@ from pathlib import Path
 from paddleocr import PaddleOCR
 
 from config.logging import setup_logging
+from config.models import get_model
 from config.settings import SUPPORTED_IMAGE_EXTENSIONS
 from utils.ollama_client import generate_stream
 
@@ -137,7 +138,7 @@ class ImageIngestor(BaseIngestor):
     isn't in either source. Output only the combined passage."""
 
         try:
-            fused = "".join(generate_stream(prompt))
+            fused = "".join(generate_stream(prompt, model=get_model("summarize")))
             logger.debug(f"Fused OCR and Qwen2.5-VL output for '{source_name}'")
             return fused
         except Exception as e:

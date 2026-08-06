@@ -5,6 +5,7 @@ import Link from "next/link";
 import { ArrowLeft, Save } from "lucide-react";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { useSettings } from "@/hooks/useSettings";
+import { DEFAULT_API_URL } from "@/lib/config";
 
 export default function SettingsPage() {
   const {
@@ -25,7 +26,7 @@ export default function SettingsPage() {
 
   function handleSave() {
     setDisplayName(localDisplayName.trim());
-    setApiUrl(localApiUrl.trim() || "http://localhost:8001");
+    setApiUrl(localApiUrl.trim() || DEFAULT_API_URL);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }
@@ -69,13 +70,13 @@ export default function SettingsPage() {
           </label>
           <p className="text-xs text-foreground-muted mb-3">
             Base URL of the RAGbase FastAPI server. Defaults to{" "}
-            <code className="font-mono text-primary">http://localhost:8001</code>.
+            <code className="font-mono text-primary">{DEFAULT_API_URL}</code>.
           </p>
           <input
             type="url"
             value={localApiUrl}
             onChange={(e) => setLocalApiUrl(e.target.value)}
-            placeholder="http://localhost:8001"
+            placeholder={DEFAULT_API_URL}
             className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-foreground-muted outline-none focus:border-primary/60 focus:ring-1 focus:ring-ring transition-shadow"
           />
         </div>

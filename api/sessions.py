@@ -19,8 +19,8 @@ def should_reset():
     if RESET_FLAG.exists():
         try:
             RESET_FLAG.unlink()
-        except Exception:
-            pass
+        except OSError as e:
+            logger.warning(f"Failed to remove reset flag: {e}")
         logger.info("Session reset flag consumed — frontend will clear chat history")
         return {"reset": True}
     return {"reset": False}

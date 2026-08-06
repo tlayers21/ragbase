@@ -330,12 +330,12 @@ async def query_with_attachments(
             results: list[dict] = []
             if saved:
                 yield f"data: [STAGE]{json.dumps({'stage': 'processing_attachments'})}\n\n"
-                yield "data: [HEARTBEAT]\n\n"
                 for item in saved:
                     # Bail before each attachment (vision calls can run 30-50s+) so a
                     # client that already clicked stop doesn't keep the pipeline busy.
                     if await request.is_disconnected():
                         return
+                    yield "data: [HEARTBEAT]\n\n"
                     results.append(await asyncio.to_thread(_process_one_attachment, item))
                 attachments_payload = [
                     {"type": r["type"], "name": r["name"], "description": r["description"]}

@@ -203,7 +203,7 @@ Respond with valid JSON only in this exact format:
 Only include clear factual entities and relationships. Output JSON only, no explanation."""
 
     try:
-        raw = "".join(generate_stream(prompt, model=get_model("summarize")))
+        raw = "".join(generate_stream(prompt, model=get_model("entity_extraction")))
         raw = (
             raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
         )  # models often fence JSON
@@ -294,7 +294,7 @@ def has_graph(user_id: str) -> bool:
     if not DB_PATH.exists():
         return False
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=5)
+        conn = sqlite3.connect(DB_PATH, timeout=30)
         try:
             row = conn.execute(
                 f"SELECT 1 FROM nodes_{user_id} LIMIT 1"  # noqa: S608

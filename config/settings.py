@@ -13,6 +13,7 @@ CHUNK_OVERLAP = 50
 TOP_K_CANDIDATES = 20
 MAX_FINAL_RESULTS = 5
 RERANKER_MIN_SCORE = -8.0
+SUMMARY_DISTANCE_THRESHOLD = 0.7  # Stage 1 cosine distance cutoff — above this, source is off-topic
 CACHE_TTL = 86400  # 24 hours in seconds
 CACHE_SIMILARITY_THRESHOLD = 0.85
 RRF_K = 60

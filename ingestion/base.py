@@ -6,6 +6,7 @@ from functools import partial
 from pathlib import Path
 
 from config.logging import setup_logging
+from config.models import get_model
 from config.paths import KNOWLEDGE_GRAPH_DB_PATH
 from config.settings import EMBED_BATCH_SIZE
 from ingestion.queue import _update_job, enqueue_graph_build, is_cancelled, update_job_estimate
@@ -131,7 +132,7 @@ class BaseIngestor(ABC):
 
     def _count_graph_items_for_source(self, source: str) -> tuple[int, int]:
         """Count graph nodes/edges for a source to report background build progress."""
-        conn = sqlite3.connect(KNOWLEDGE_GRAPH_DB_PATH)
+        conn = sqlite3.connect(KNOWLEDGE_GRAPH_DB_PATH, timeout=30)
         try:
             entity_count = conn.execute(
                 f"SELECT COUNT(*) FROM nodes_{self.user_id} WHERE source = ?",
@@ -225,7 +226,7 @@ class BaseIngestor(ABC):
                 f"Summarize the following document in 3-4 sentences for search indexing. "
                 f"Document: {text[:2000]}"
             )
-            summary = "".join(generate_stream(summary_prompt))
+            summary = "".join(generate_stream(summary_prompt, model=get_model("summarize")))
             self.store_summary(summary, source_name)
             self._update_job_status("ingested")
             clear_cache(self.user_id)

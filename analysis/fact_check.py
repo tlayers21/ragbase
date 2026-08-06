@@ -1,5 +1,6 @@
 from analysis.common import parse_verdict, update_chunk_metadata
 from config.logging import setup_logging
+from config.models import get_model
 from utils.chromadb_client import get_collection
 from utils.ollama_client import generate_stream
 
@@ -25,7 +26,7 @@ REASON: (if FLAGGED, explain what seems incorrect. If OK, write "No issues found
 Be conservative - only flag clear factual errors, not opinions or uncertain claims."""
 
     try:
-        raw = "".join(generate_stream(prompt))
+        raw = "".join(generate_stream(prompt, model=get_model("fact_check")))
         verdict, reason = parse_verdict(raw, "OK", "No issues found.")
         return verdict == "FLAGGED", reason
 
