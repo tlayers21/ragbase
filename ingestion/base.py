@@ -1,14 +1,14 @@
 import sqlite3
-import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
+from functools import partial
 from pathlib import Path
 
 from config.logging import setup_logging
 from config.paths import KNOWLEDGE_GRAPH_DB_PATH
 from config.settings import EMBED_BATCH_SIZE
-from ingestion.queue import _update_job, is_cancelled, update_job_estimate
+from ingestion.queue import _update_job, enqueue_graph_build, is_cancelled, update_job_estimate
 from retrieval.embed import chunk_text, embed, embed_batch
 from retrieval.graph import build_from_chunks
 from utils.cache import clear_cache
@@ -237,12 +237,12 @@ class BaseIngestor(ABC):
                 },
             )
 
-            # Phase 2: build knowledge graph in background; do not block completion.
-            threading.Thread(
-                target=self._build_graph_background,
-                args=(chunks, source_name),
-                daemon=True,
-            ).start()
+            # Phase 2: enqueue the graph build on the dedicated sequential queue
+            # (see ingestion/queue.py) instead of spawning our own thread, so
+            # concurrently-ingested sources don't all hit qwen2.5:3b at once.
+            enqueue_graph_build(
+                self.job_id, partial(self._build_graph_background, chunks, source_name)
+            )
 
             return stored
         except IngestionCancelled as e:

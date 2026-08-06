@@ -19,6 +19,7 @@ from config.models import MODEL_STANDARD, get_model
 from config.runtime import DEVICE_ID, USER_ID, load_settings
 from config.settings import OLLAMA_URL
 from ingestion.queue import start as start_ingestion_queue
+from ingestion.queue import start_graph_queue
 from retrieval.pipeline import configure_dspy
 
 logger = setup_logging(__name__)
@@ -31,6 +32,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"User ID: {USER_ID}, telemetry device ID: {DEVICE_ID}")
     configure_dspy(OLLAMA_URL, MODEL_STANDARD)
     start_ingestion_queue()
+    start_graph_queue()
 
     async def _warmup_reranker() -> None:
         try:
@@ -91,3 +93,7 @@ app.include_router(title_router)
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+@app.get("/")
+async def root():
+    return {"status": "RAGbase API running"}

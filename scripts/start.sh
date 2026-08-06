@@ -1,6 +1,10 @@
 #!/bin/bash
 cd "$(dirname "$0")/.."
 
+# Clear ports before starting
+lsof -i :3000 | awk 'NR>1 {print $2}' | xargs kill -9 2>/dev/null || true
+lsof -i :8001 | awk 'NR>1 {print $2}' | xargs kill -9 2>/dev/null || true
+
 echo "=== Starting RAGbase ==="
 
 # 0. Check for updates

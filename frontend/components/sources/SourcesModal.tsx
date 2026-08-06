@@ -189,9 +189,12 @@ function PreviewPane({ source, onClose }: PreviewPaneProps) {
         )}
 
         {!isLoading && !error && type === "text" && (
-          <pre className="p-4 text-xs text-foreground leading-relaxed whitespace-pre-wrap font-mono overflow-auto">
-            {textContent ?? ""}
-          </pre>
+          <div className="relative p-4">
+            <pre className="text-xs text-foreground leading-relaxed whitespace-pre-wrap font-mono">
+              {(textContent ?? "").slice(0, 800)}
+            </pre>
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-background to-transparent" />
+          </div>
         )}
       </div>
     </div>

@@ -124,6 +124,10 @@ async function consumeQueryStream(
 
   while (true) {
     const { done, value } = await reader.read();
+    // reader.cancel() (fired by the abort listener above) resolves the pending
+    // read() with done:true rather than rejecting it, so an abort must be
+    // detected here explicitly and re-thrown — otherwise this function just
+    // returns normally and the caller's AbortError handling never runs.
     if (done) break;
     if (signal?.aborted) break;
     buffer += decoder.decode(value, { stream: true });
@@ -172,7 +176,10 @@ async function consumeQueryStream(
     }
   }
 
-  if (!signal?.aborted) handlers.onDone();
+  if (signal?.aborted) {
+    throw new DOMException("The user aborted a request.", "AbortError");
+  }
+  handlers.onDone();
 }
 
 export async function streamQuery(

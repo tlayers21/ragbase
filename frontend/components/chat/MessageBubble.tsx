@@ -230,12 +230,16 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           <>
             <div className="mt-2 flex items-center gap-2">
               <span className="text-[10px] text-foreground-muted/60">{modeBadgeLabel}</span>
-              {message.latencyMs !== undefined && (
-                <span className="text-[10px] text-foreground-muted/50">
-                  {message.latencyMs < 1000
-                    ? `${message.latencyMs}ms`
-                    : `${(message.latencyMs / 1000).toFixed(1)}s`}
-                </span>
+              {message.stage === "stopped" ? (
+                <span className="text-[10px] text-foreground-muted/50">stopped</span>
+              ) : (
+                message.latencyMs !== undefined && (
+                  <span className="text-[10px] text-foreground-muted/50">
+                    {message.latencyMs < 1000
+                      ? `${message.latencyMs}ms`
+                      : `${(message.latencyMs / 1000).toFixed(1)}s`}
+                  </span>
+                )
               )}
               <div
                 className={cn(

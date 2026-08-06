@@ -134,7 +134,12 @@ export function useChat() {
       attachments: PendingAttachment[] = []
     ) => {
       if (isLoadingRef.current) {
+        // A previous stream is still open — abort it and give the fetch a
+        // moment to actually tear down before opening a new one, or the
+        // in-flight reader can throw "Error in input stream".
         abortRef.current?.abort();
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        isLoadingRef.current = false;
       }
       const gen = ++generationRef.current;
       let sessionId = activeSessionId;
@@ -379,9 +384,10 @@ export function useChat() {
         // Abort is intentional — keep whatever content was streamed
         if ((err as { name?: string }).name === "AbortError") {
           handlers.onDone();
-          // Briefly show "Stopped." in place of the stage indicator, then clear it.
-          setSessions((prev) =>
-            prev.map((s) => {
+          // "Stopped." stays on the message permanently so the user always
+          // knows this response was cut short mid-generation.
+          setSessions((prev) => {
+            const next = prev.map((s) => {
               if (s.id !== sessionId) return s;
               return {
                 ...s,
@@ -389,23 +395,10 @@ export function useChat() {
                   m.id === assistantId ? { ...m, stage: "stopped" } : m
                 ),
               };
-            })
-          );
-          setTimeout(() => {
-            setSessions((prev) =>
-              prev.map((s) => {
-                if (s.id !== sessionId) return s;
-                return {
-                  ...s,
-                  messages: s.messages.map((m) =>
-                    m.id === assistantId && m.stage === "stopped"
-                      ? { ...m, stage: undefined }
-                      : m
-                  ),
-                };
-              })
-            );
-          }, 1500);
+            });
+            saveSessions(next);
+            return next;
+          });
           return;
         }
         setError(err instanceof Error ? err.message : "Request failed");

@@ -21,7 +21,10 @@ logger = setup_logging(__name__)
 _queue = queue.Queue()
 _worker_thread = None
 
-_ACTIVE_STATUSES = {"queued", "ingesting", "ingested", "building_graph"}
+_graph_queue = queue.Queue()
+_graph_worker_thread = None
+
+_ACTIVE_STATUSES = {"queued", "ingesting", "ingested", "waiting_for_graph", "building_graph"}
 
 
 # -- Status file helpers ---------------------------------------------------
@@ -176,6 +179,44 @@ def _worker():
                 except Exception:
                     pass
             _queue.task_done()
+
+
+# -- Graph build worker -----------------------------------------------------
+# Runs on its own thread/queue, separate from ingestion, so multiple sources'
+# graph builds never run concurrently and contend for qwen2.5:3b.
+def _graph_worker() -> None:
+    """Background thread that runs enqueued graph-build callbacks one at a time."""
+    while True:
+        build_fn = _graph_queue.get()
+        if build_fn is None:
+            break
+        try:
+            build_fn()
+        except Exception as e:
+            logger.error(f"Graph build job failed: {e}")
+        finally:
+            _graph_queue.task_done()
+
+
+def enqueue_graph_build(job_id: str | None, build_fn) -> None:
+    """
+    Queue a source's graph build to run sequentially behind any others already
+    waiting. Marks the job "waiting_for_graph" immediately — build_fn itself
+    (BaseIngestor._build_graph_background) transitions it to "building_graph"
+    then "done" once the worker actually picks it up.
+    """
+    if job_id:
+        _update_job(job_id, "waiting_for_graph")
+    _graph_queue.put(build_fn)
+
+
+def start_graph_queue() -> None:
+    """Start the graph build worker thread. Call once on app startup."""
+    global _graph_worker_thread
+    if _graph_worker_thread is None or not _graph_worker_thread.is_alive():
+        _graph_worker_thread = threading.Thread(target=_graph_worker, daemon=True)
+        _graph_worker_thread.start()
+        logger.info("Graph build queue worker started")
 
 
 # -- Public API ------------------------------------------------------------

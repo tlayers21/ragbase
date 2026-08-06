@@ -108,14 +108,11 @@ body {
   background: var(--border);
 }
 
-/* Focus ring */
-:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
-}
-
-/* Chat input textarea: focus ring lives on the outer container only */
-textarea:focus {
+/* No browser default focus rings anywhere — interactive containers handle
+   their own focus-within border/ring styling at the component level. */
+*,
+*:focus,
+*:focus-visible {
   outline: none !important;
   box-shadow: none !important;
 }

@@ -7,7 +7,10 @@ import { DropZone } from "@/components/sources/DropZone";
 import { generateTitle } from "@/lib/api";
 import type { IngestionJob } from "@/types";
 
-const CANCELLABLE_STATUSES = new Set(["queued", "ingesting", "building_graph"]);
+// Once a source reaches "ingested" it's already queryable — the graph-build
+// stages (waiting_for_graph, building_graph) that follow are non-destructive
+// background work, so cancelling them wouldn't undo anything worth undoing.
+const CANCELLABLE_STATUSES = new Set(["queued", "ingesting"]);
 const VIDEO_SUFFIXES = new Set([".mp4", ".mov", ".avi", ".mkv", ".webm"]);
 const IMAGE_SUFFIXES = new Set([".png", ".jpg", ".jpeg", ".webp", ".tiff"]);
 
@@ -88,7 +91,24 @@ function PendingJobProgress({ job }: { job: IngestionJob }) {
           <span className="text-[9px] font-medium text-green-600 dark:text-green-400 bg-green-500/10 rounded-full px-1.5 py-0.5">
             Ready
           </span>
-          <p className="text-[10px] text-foreground-muted">Queued for graph build…</p>
+          <p className="text-[10px] text-foreground-muted">Preparing knowledge graph…</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (status === "waiting_for_graph") {
+    return (
+      <div className="space-y-1">
+        <div className="h-1 w-full rounded-full bg-border overflow-hidden">
+          <div className="h-full rounded-full bg-green-500" style={{ width: "65%" }} />
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-[9px] font-medium text-green-600 dark:text-green-400 bg-green-500/10 rounded-full px-1.5 py-0.5">
+            Ready
+          </span>
+          <Hourglass className="h-3 w-3 text-foreground-muted/60 flex-shrink-0" />
+          <p className="text-[10px] text-foreground-muted">Waiting to build knowledge graph…</p>
         </div>
       </div>
     );
@@ -336,6 +356,8 @@ export function SourcesPanel({
                 <Hourglass className="h-4 w-4 text-yellow-500 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
               ) : job.status === "done" || job.status === "ingested" ? (
                 <CheckCircle2 className="h-4 w-4 text-green-500 flex-shrink-0 mt-0.5" />
+              ) : job.status === "waiting_for_graph" ? (
+                <Hourglass className="h-4 w-4 text-foreground-muted/60 flex-shrink-0 mt-0.5" />
               ) : job.status === "building_graph" ? (
                 <GitBranch className="h-4 w-4 text-green-500 flex-shrink-0 mt-0.5" />
               ) : (

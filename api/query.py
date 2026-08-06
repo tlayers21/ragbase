@@ -126,7 +126,7 @@ async def query(req: QueryRequest):
 
 
 @router.post("/stream")
-async def query_stream(req: QueryRequest) -> StreamingResponse:
+async def query_stream(req: QueryRequest, request: Request) -> StreamingResponse:
     """
     Same retrieval as /query, but streams progress and the answer as
     Server-Sent Events. `data: [STAGE]{"stage": ...}\\n\\n` events mark
@@ -165,6 +165,9 @@ async def query_stream(req: QueryRequest) -> StreamingResponse:
             for doc, meta, score in zip(docs, metas, scores)
         ]
         prompt = build_answer_prompt(req.question, context, history_str)
+
+        if await request.is_disconnected():
+            return
 
         logger.info("Emitting [STAGE] generating")
         yield f"data: [STAGE]{json.dumps({'stage': 'generating'})}\n\n"

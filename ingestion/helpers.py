@@ -1,6 +1,7 @@
 import concurrent.futures
 from pathlib import Path
 
+import torch
 import whisper
 
 from config.logging import setup_logging
@@ -16,7 +17,8 @@ logger = setup_logging(__name__)
 def transcribe(audio_path: str | Path) -> str:
     """Transcribe audio/video file using Whisper. Returns timestamped transcript."""
     logger.info(f"Transcribing {audio_path}...")
-    model = whisper.load_model("base")
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    model = whisper.load_model("base", device=device)
     result = model.transcribe(str(audio_path), fp16=False)
     return format_transcript(result["segments"])
 

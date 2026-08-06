@@ -12,7 +12,13 @@ import {
 import { deriveSourceName } from "@/lib/utils";
 import type { IngestionJob } from "@/types";
 
-const ACTIVE_STATUSES = new Set(["queued", "ingesting", "ingested", "building_graph"]);
+const ACTIVE_STATUSES = new Set([
+  "queued",
+  "ingesting",
+  "ingested",
+  "waiting_for_graph",
+  "building_graph",
+]);
 
 function hasActiveJobs(jobs: IngestionJob[]): boolean {
   return jobs.some((j) => ACTIVE_STATUSES.has(j.status));
@@ -136,7 +142,9 @@ export function useIngestion(onComplete?: () => void) {
   );
 
   const cancelJob = useCallback(async (jobId: string) => {
-    setJobs((prev) => prev.filter((j) => j.id !== jobId));
+    // hiddenJobIds (not a local jobs filter) is what keeps it hidden — the next
+    // status poll would otherwise bring the now-"cancelled" job right back.
+    setHiddenJobIds((prev) => new Set([...prev, jobId]));
     try {
       await cancelIngestion(jobId);
     } catch (err) {
