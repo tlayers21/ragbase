@@ -113,12 +113,12 @@ export function useIngestion(onComplete?: () => void) {
   }, []);
 
   const uploadFile = useCallback(
-    async (file: File) => {
+    async (file: File, describeImages = false) => {
       const sourceName = deriveSourceName(file.name);
       setIsUploading(true);
       setUploadError(null);
       try {
-        const result = await ingestFile(file, sourceName);
+        const result = await ingestFile(file, sourceName, describeImages);
         const suffixMatch = file.name.match(/\.[^/.]+$/);
         const newJob: IngestionJob = {
           id: result.job_id,

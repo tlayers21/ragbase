@@ -4,7 +4,7 @@
 > Version: 16.2.10 (App Router)
 > Re-fetch when version changes or docs feel stale
 
-`frontend/AGENTS.md` flags this version as having breaking changes vs. typical training data — this file reflects the v16.2.9 official docs pulled live via Context7 (closest indexed version to the installed 16.2.10).
+This Next.js version has breaking changes vs. typical training data — this file reflects the v16.2.9 official docs pulled live via Context7 (closest indexed version to the installed 16.2.10).
 
 ---
 
@@ -292,4 +292,4 @@ export function SourceList() {
 
 **Dark mode**: CSS variables (`data-theme` attribute on `<html>`), not Tailwind `dark:` prefix.
 
-**AGENTS.md gate**: `frontend/AGENTS.md` warns this Next.js version has breaking changes from typical training data and points at `node_modules/next/dist/docs/` as the locally-vendored authoritative source — check that directory too when in doubt, not just this cache.
+**Version gate**: this Next.js version has breaking changes from typical training data. `frontend/node_modules/next/dist/docs/` is the locally-vendored authoritative source — check that directory too when in doubt, not just this cache. (A `frontend/AGENTS.md` used to carry this warning; it has since been deleted.)

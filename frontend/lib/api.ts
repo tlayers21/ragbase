@@ -52,10 +52,24 @@ export function getSourceFileUrl(source: string): string {
   return `${getBaseUrl()}/sources/${encodeURIComponent(source)}/file`;
 }
 
-export async function fetchSourceText(source: string): Promise<string> {
-  const res = await fetch(getSourceFileUrl(source));
+export async function fetchSourceText(source: string, signal?: AbortSignal): Promise<string> {
+  const res = await fetch(getSourceFileUrl(source), { signal });
   if (!res.ok) throw new Error(`fetchSourceText: ${res.status}`);
   return res.text();
+}
+
+// HEADs the stored source file to sniff its Content-Type. The backend serves the
+// original upload, so the extension isn't recoverable from the source name alone.
+export async function fetchSourceType(
+  source: string,
+  signal?: AbortSignal
+): Promise<"pdf" | "image" | "text"> {
+  const res = await fetch(getSourceFileUrl(source), { method: "HEAD", signal });
+  if (!res.ok) throw new Error(`${res.status}`);
+  const contentType = res.headers.get("content-type") ?? "";
+  if (contentType.includes("pdf")) return "pdf";
+  if (contentType.startsWith("image/")) return "image";
+  return "text";
 }
 
 export async function generateChatTitle(message: string): Promise<string> {
@@ -136,9 +150,16 @@ async function consumeQueryStream(
     buffer = frames.pop() ?? "";
 
     for (const frame of frames) {
-      const line = frame.trim();
-      if (!line.startsWith("data: ")) continue;
-      const payload = line.slice("data: ".length);
+      // Strip only the SSE line framing — never trim the payload. Model tokens
+      // are frequently pure whitespace (" ") or carry a leading/trailing space,
+      // and trimming the frame silently drops them: a " " token became "" and
+      // was skipped entirely, rendering "12 multiplied by8 equals96".
+      const line = frame.replace(/^\n+/, "").replace(/\r$/, "");
+      if (!line.startsWith("data:")) continue;
+      // Per the SSE spec a single space after "data:" is framing, not content.
+      const payload = line.startsWith("data: ")
+        ? line.slice("data: ".length)
+        : line.slice("data:".length);
 
       if (payload === "[HEARTBEAT]") continue;
       if (payload === "[DONE]") {
@@ -172,7 +193,17 @@ async function consumeQueryStream(
         }
         continue;
       }
-      handlers.onToken(payload);
+      // Token frames are JSON-encoded strings (see _sse_token in api/query.py) so
+      // that newlines survive the blank-line frame delimiter and markdown lists,
+      // paragraphs and headings render as written. Any control frame was matched
+      // above, so anything reaching here is a token.
+      try {
+        handlers.onToken(JSON.parse(payload) as string);
+      } catch {
+        // Tolerate an un-encoded payload rather than dropping the token outright
+        // (e.g. a frontend running against an older backend).
+        handlers.onToken(payload);
+      }
     }
   }
 
@@ -266,11 +297,14 @@ export async function streamAttachmentQuery(
 
 export async function ingestFile(
   file: File,
-  sourceName: string
+  sourceName: string,
+  describeImages = false
 ): Promise<{ job_id: string; status: string }> {
   const form = new FormData();
   form.append("file", file);
   form.append("source", sourceName);
+  // PDFs only — every other format ignores it server-side.
+  form.append("describe_images", String(describeImages));
 
   const res = await fetch(`${getBaseUrl()}/ingest/file`, {
     method: "POST",

@@ -12,12 +12,17 @@ from config.settings import (
     HANDWRITTEN_IMAGE_THRESHOLD,
     HANDWRITTEN_TEXT_THRESHOLD,
     OLLAMA_URL,
+    PDF_ANYDOC_MAX_BYTES,
+    PDF_IMAGE_SCALE,
+    PDF_SCANNED_CHARS_PER_PAGE,
+    PDF_TEXT_PROBE_PAGES,
     SUPPORTED_PDF_EXTENSIONS,
     VISION_TIMEOUT_SECONDS,
 )
 from ingestion.queue import is_cancelled
 from retrieval.pipeline import TextCleanup, TranscriptionRefinement
 
+from . import anydoc_convert
 from .base import BaseIngestor, IngestionCancelled
 from .helpers import describe_image, vision_with_timeout
 
@@ -26,13 +31,24 @@ logger = setup_logging(__name__)
 
 class PdfIngestor(BaseIngestor):
     """
-    Ingestor for PDF files. Handles three cases:
-    - Normal PDFs: Docling extracts text,
-      Qwen2.5-VL describes embedded images.
-    - Handwritten PDFs: Detected via image placeholder ratio. Pages converted
-      to images and transcribed one by one via Qwen2.5-VL with resume capability.
-    - Mixed PDFs: Combination of text extraction and image description.
+    Ingestor for PDF files. Routes each file to one of three paths:
+
+    - **Typed PDFs → anydoc.** Pure-Rust Markdown conversion, seconds rather than
+      minutes, and the output is already clean GFM so it needs no LLM cleanup pass.
+    - **Scanned/handwritten PDFs → Qwen2.5-VL.** Pages are rendered to images and
+      transcribed one at a time, with page-level resume.
+    - **Anything anydoc can't handle → Docling.** The original pipeline, kept as a
+      fallback for oversized files and unexpected conversion failures.
+
+    `describe_images` is opt-in per file (the "Describe diagrams" checkbox in the
+    UI). Embedded figures are largely vector drawings, which only Docling's layout
+    model detects, so describing them means paying for a Docling pass on top of
+    anydoc — worth it for slide decks full of diagrams, wasteful for prose.
     """
+
+    def __init__(self, user_id: str, job_id: str | None = None, describe_images: bool = False):
+        super().__init__(user_id, job_id=job_id)
+        self.describe_images = describe_images
 
     def extract_text(self, source_path: str | Path, source_name: str) -> str:
         source_path = Path(source_path)
@@ -42,21 +58,115 @@ class PdfIngestor(BaseIngestor):
 
         logger.info(f"Processing PDF '{source_name}'...")
 
-        # Docling is a heavy optional dependency — import lazily so it's only
-        # loaded when a PDF is actually being ingested.
-        from docling.document_converter import DocumentConverter
-
-        converter = DocumentConverter()
-        result = converter.convert(source_path)
-        doc = result.document
-
-        if self._is_handwritten(doc):
+        if self._looks_scanned(source_path, source_name):
             logger.info(
-                f"Handwritten PDF detected for '{source_name}', switching to VLM mode (qwen2.5vl)"
+                f"Scanned/handwritten PDF detected for '{source_name}', "
+                f"switching to VLM mode (qwen2.5vl)"
             )
             return self._extract_handwritten(source_path, source_name)
 
-        return self._extract_typed(doc, source_name)
+        size = source_path.stat().st_size
+        if size >= PDF_ANYDOC_MAX_BYTES:
+            logger.info(
+                f"'{source_name}' is {size / 1e6:.0f}MB, above the anydoc memory ceiling — "
+                f"using Docling instead"
+            )
+            return self._extract_with_docling(source_path, source_name)
+
+        self._set_estimate(30)  # anydoc finishes in seconds; the summary call dominates
+        result = anydoc_convert.to_markdown(source_path, source_name)
+
+        if result.ok:
+            return self._append_image_descriptions(result.markdown, source_path, source_name)
+
+        if result.needs_ocr:
+            # The text probe above can be fooled by a PDF whose text layer is a few
+            # stray page numbers. anydoc inspects every page, so trust it over the probe.
+            logger.info(f"anydoc reports '{source_name}' needs OCR, switching to VLM mode")
+            return self._extract_handwritten(source_path, source_name)
+
+        logger.warning(
+            f"anydoc failed on '{source_name}' ({result.status}: {result.detail}), "
+            f"falling back to Docling"
+        )
+        return self._extract_with_docling(source_path, source_name)
+
+    # -- Routing helpers -------------------------------------------------------
+    def _looks_scanned(self, pdf_path: Path, source_name: str) -> bool:
+        """
+        Decide whether a PDF has a usable text layer, by sampling pages with PyMuPDF.
+
+        This runs before anydoc on purpose. anydoc buffers the entire file to answer
+        the same question, and on large scanned books that means gigabytes of RAM for
+        an answer PyMuPDF gives in well under a second from page metadata.
+
+        Returning False only means "there is text" — anydoc still gets the final say
+        via its own `OCR is required` verdict.
+        """
+        try:
+            import pymupdf
+        except ImportError as e:
+            logger.warning(f"PyMuPDF unavailable for the text probe on '{source_name}': {e}")
+            return False
+
+        try:
+            doc = pymupdf.open(pdf_path)
+        except Exception as e:
+            logger.warning(f"Could not open '{source_name}' for the text probe: {e}")
+            return False
+
+        try:
+            pages = doc.page_count
+            if pages == 0:
+                return False
+
+            step = max(1, pages // PDF_TEXT_PROBE_PAGES)
+            sampled = 0
+            chars = 0
+            for page_no in range(0, pages, step):
+                chars += len(doc[page_no].get_text().strip())
+                sampled += 1
+        except Exception as e:
+            logger.warning(f"Text probe failed for '{source_name}': {e}; assuming typed")
+            return False
+        finally:
+            doc.close()
+
+        per_page = chars / sampled
+        logger.info(
+            f"Text probe for '{source_name}': {per_page:.0f} chars/page "
+            f"over {sampled} of {pages} pages"
+        )
+        return per_page < PDF_SCANNED_CHARS_PER_PAGE
+
+    def _append_image_descriptions(self, markdown: str, pdf_path: Path, source_name: str) -> str:
+        """
+        Optionally describe the PDF's figures and append them to anydoc's Markdown.
+
+        anydoc returns one blob with no page provenance, so descriptions can't be
+        interleaved the way the Docling path does it — they are appended as a trailing
+        section tagged with the page each figure came from. Chunking is by word count,
+        so the descriptions still become retrievable chunks; they just aren't adjacent
+        to their page's prose.
+        """
+        if not self.describe_images:
+            return markdown
+
+        logger.info(f"Describing figures in '{source_name}' (opt-in, requires a Docling pass)")
+        doc = self._convert_with_docling(pdf_path, source_name, for_images_only=True)
+        if doc is None:
+            return markdown
+
+        images_by_page = self._describe_images(doc, source_name)
+        if not images_by_page:
+            return markdown
+
+        blocks = [
+            f"[Image (page {page_no}): {description}]"
+            for page_no in sorted(images_by_page)
+            for description in images_by_page[page_no]
+        ]
+        return f"{markdown}\n\n--- Figures ---\n\n" + "\n\n".join(blocks)
 
     # -- Handwritten PDF -------------------------------------------------------
     def _is_handwritten(self, doc) -> bool:
@@ -212,23 +322,76 @@ class PdfIngestor(BaseIngestor):
         )
         return vision_with_timeout(image_path, prompt, task="vision_handwrite", timeout=timeout)
 
+    # -- Docling fallback ------------------------------------------------------
+    def _convert_with_docling(
+        self, pdf_path: Path, source_name: str, for_images_only: bool = False
+    ):
+        """
+        Run Docling's converter and return the parsed document, or None on failure.
+
+        `for_images_only` is the cheap configuration used when anydoc already supplied
+        the text and Docling is needed solely to locate figures: OCR and table
+        structure analysis are both switched off, leaving only layout detection.
+        """
+        # Docling is a heavy optional dependency — import lazily so it's only
+        # loaded when a PDF actually needs it.
+        from docling.datamodel.base_models import InputFormat
+        from docling.datamodel.pipeline_options import PdfPipelineOptions, RapidOcrOptions
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+
+        pipeline_options = PdfPipelineOptions(
+            # Without this, PictureItem.get_image() returns None for every image and
+            # _describe_images() silently finds nothing to describe.
+            generate_picture_images=True,
+            images_scale=PDF_IMAGE_SCALE,
+            # Docling defaults ocr_options.kind to "auto", which resolves to whichever
+            # OCR engine happens to be installed. Pinning RapidOCR keeps extraction
+            # reproducible instead of changing silently when dependencies shift.
+            ocr_options=RapidOcrOptions(),
+        )
+        if for_images_only:
+            pipeline_options.do_ocr = False
+            pipeline_options.do_table_structure = False
+
+        converter = DocumentConverter(
+            format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
+        )
+
+        try:
+            return converter.convert(pdf_path).document
+        except Exception as e:
+            logger.error(f"Docling conversion failed for '{source_name}': {e}")
+            return None
+
+    def _extract_with_docling(self, pdf_path: Path, source_name: str) -> str:
+        """
+        The original Docling pipeline, kept for PDFs anydoc declines: files above the
+        memory ceiling, and conversions that crash or time out.
+        """
+        doc = self._convert_with_docling(pdf_path, source_name)
+        if doc is None:
+            raise ValueError(f"Neither anydoc nor Docling could extract text from '{source_name}'")
+
+        if self._is_handwritten(doc):
+            logger.info(
+                f"Handwritten PDF detected for '{source_name}', switching to VLM mode (qwen2.5vl)"
+            )
+            return self._extract_handwritten(pdf_path, source_name)
+
+        return self._extract_typed(doc, source_name)
+
     # -- Typed PDF -------------------------------------------------------------
     def _extract_typed(self, doc, source_name: str) -> str:
         """
         Extract text from a typed PDF using Docling.
-        Describes embedded images using qwen2.5vl.
+        Describes embedded images using qwen2.5vl and interleaves them by page.
         """
-        text = self._extract_typed_pages(doc, source_name)
-        text = self._describe_images(doc, text, source_name)
+        # Gated on the same per-file opt-in as the anydoc path, so the checkbox means
+        # the same thing no matter which extractor handled the file.
+        images_by_page = self._describe_images(doc, source_name) if self.describe_images else {}
+        text = self._extract_typed_pages(doc, source_name, images_by_page)
 
-        # Clean up any placeholders that couldn't be converted
-        remaining_images = text.count("<!-- image -->")
         remaining_formulas = text.count("<!-- formula-not-decoded -->")
-        if remaining_images > 0:
-            logger.warning(
-                f"{remaining_images} image placeholders could not be replaced for '{source_name}'"
-            )
-            text = text.replace("<!-- image -->", "")
         if remaining_formulas > 0:
             logger.warning(
                 f"{remaining_formulas} formula placeholders could not be converted "
@@ -238,7 +401,9 @@ class PdfIngestor(BaseIngestor):
 
         return text
 
-    def _extract_typed_pages(self, doc, source_name: str) -> str:
+    def _extract_typed_pages(
+        self, doc, source_name: str, images_by_page: dict[int, list[str]] | None = None
+    ) -> str:
         """
         Export and clean typed PDF text one page at a time.
 
@@ -263,63 +428,89 @@ class PdfIngestor(BaseIngestor):
 
             page_texts.setdefault(page_no, []).append(text)
 
+        images_by_page = images_by_page or {}
         cleaned_pages: list[str] = []
-        sorted_pages = sorted(page_texts)
+        # Union of both maps: a page can hold only a diagram and no extractable text,
+        # and its description would be dropped if we walked text pages alone.
+        sorted_pages = sorted(set(page_texts) | set(images_by_page))
 
         for page_no in sorted_pages:
             if self.job_id and is_cancelled(self.job_id):
                 raise IngestionCancelled(f"Ingestion of '{source_name}' was cancelled")
 
-            raw_page_text = "\n".join(page_texts[page_no])
-            if not raw_page_text.strip():
-                cleaned_pages.append(raw_page_text)
-                continue
+            raw_page_text = "\n".join(page_texts.get(page_no, []))
+            page_output = raw_page_text
 
-            try:
-                result = cleanup(raw_text=raw_page_text)
-                cleaned_page_text = getattr(result, "cleaned_text", "")
+            if raw_page_text.strip():
+                try:
+                    result = cleanup(raw_text=raw_page_text)
+                    cleaned_page_text = getattr(result, "cleaned_text", "")
 
-                if not isinstance(cleaned_page_text, str) or not cleaned_page_text.strip():
-                    raise ValueError("TextCleanup returned an empty or malformed response")
+                    if not isinstance(cleaned_page_text, str) or not cleaned_page_text.strip():
+                        raise ValueError("TextCleanup returned an empty or malformed response")
 
-                cleaned_pages.append(cleaned_page_text)
-            except Exception as e:
-                logger.warning(
-                    f"TextCleanup failed for page {page_no} of '{source_name}': {e}; using raw text"
-                )
-                cleaned_pages.append(raw_page_text)
+                    page_output = cleaned_page_text
+                except Exception as e:
+                    logger.warning(
+                        f"TextCleanup failed for page {page_no} of '{source_name}': {e}; "
+                        f"using raw text"
+                    )
+
+            # Descriptions go after the page's prose so a chunk covering this page
+            # carries both, and cleanup never sees VLM output as "raw text to fix".
+            descriptions = images_by_page.get(page_no, [])
+            if descriptions:
+                blocks = "\n".join(f"[Image: {d}]" for d in descriptions)
+                page_output = f"{page_output}\n{blocks}" if page_output.strip() else blocks
+
+            cleaned_pages.append(page_output)
 
         return "\n\n".join(cleaned_pages)
 
-    def _describe_images(self, doc, text: str, source_name: str) -> str:
+    def _describe_images(self, doc, source_name: str) -> dict[int, list[str]]:
         """
-        Find embedded images in the PDF and replace their <!-- image --> placeholders
-        inline with Qwen2.5-VL descriptions, preserving document order.
+        Describe each embedded image with Qwen2.5-VL, keyed by the page it appears on.
+
+        Returns {page_no: [description, ...]} so the caller can interleave descriptions
+        with that page's text. Keying by page (rather than substituting Docling's
+        `<!-- image -->` markdown placeholder) is deliberate: page text is assembled
+        from `doc.texts`, which never contains those placeholders, so placeholder
+        substitution silently matched nothing and every image was dropped.
         """
-        image_count = 0
+        images_by_page: dict[int, list[str]] = {}
+        described = 0
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            for element, _ in doc.iterate_items():
+            for index, picture in enumerate(getattr(doc, "pictures", [])):
                 if self.job_id and is_cancelled(self.job_id):
                     raise IngestionCancelled(f"Ingestion of '{source_name}' was cancelled")
 
+                if not picture.prov:
+                    continue
+                page_no = picture.prov[0].page_no
+
                 try:
-                    if hasattr(element, "image") and element.image is not None:
-                        img_path = os.path.join(tmp_dir, f"img_{image_count}.png")
-                        element.image.pil_image.save(img_path)
+                    # Requires generate_picture_images=True on the pipeline options —
+                    # otherwise this is None for every picture.
+                    image = picture.get_image(doc)
+                    if image is None:
+                        continue
 
-                        description = describe_image(img_path, source_name)
+                    img_path = os.path.join(tmp_dir, f"img_{index}.png")
+                    image.save(img_path)
 
-                        # Replace the next <!-- image --> placeholder in place
-                        text = text.replace("<!-- image -->", f"\n[Image: {description}]\n", 1)
-                        image_count += 1
-
+                    description = describe_image(img_path, source_name)
+                    if description and description.strip():
+                        images_by_page.setdefault(page_no, []).append(description.strip())
+                        described += 1
                 except Exception as e:
-                    logger.warning(f"Failed to describe image {image_count}: {e}, skipping")
-                    text = text.replace("<!-- image -->", "\n[Image could not be described]\n", 1)
+                    logger.warning(
+                        f"Failed to describe image {index} on page {page_no} of "
+                        f"'{source_name}': {e}, skipping"
+                    )
                     continue
 
-        if image_count > 0:
-            logger.info(f"Described {image_count} embedded images from '{source_name}'")
+        if described:
+            logger.info(f"Described {described} embedded images from '{source_name}'")
 
-        return text
+        return images_by_page

@@ -1,130 +1,204 @@
 # RAGbase Commenting Skill
 
-The goal is comments that justify their existence — explaining *why*, never *what*. A well-named function needs no comment. An unusual threshold, a race-condition workaround, or a non-obvious library quirk earns one.
+A comment must justify its existence by explaining something the code cannot: **why**,
+never **what**. A well-named function needs no comment. An unusual threshold, a race
+workaround, or a library quirk earns one.
+
+**The test:** if the comment would still be true after you deleted the code and wrote a
+different implementation, it's probably explaining *why* and belongs. If it just narrates
+the line beneath it, delete it or rename something instead.
 
 ---
 
-## Python: Section Headers
+## What complexity actually warrants a comment
 
-Use a section header above non-obvious blocks to signal a shift in concern. Never use them for every block — only where a reader would stop and wonder "what's going on here?"
+Comment when a reader who knows Python/TypeScript well would still stop and ask
+"why is it done *this* way?" Concretely, in this codebase that means:
+
+| Warrants a comment | Example from the codebase |
+|---|---|
+| A magic number whose value was chosen, not derived | `RERANKER_MIN_SCORE = -8.0`, `timeout=30`, `PASTE_TEXT_THRESHOLD = 5000` |
+| A library quirk or version workaround | Whisper's `fp16=False` on MPS; ollama-python's shifting embedding response shape |
+| A concurrency or ordering guard | the 100ms abort grace period in `useChat`; `Vary: Origin` in `api/sources.py` |
+| Deliberately *not* doing the obvious thing | generation using `generate_stream()` instead of DSPy because `Predict` can't stream |
+| A lossy or approximate tradeoff being accepted knowingly | `_strip_latex()` also mangling code blocks; the `chars/4` token estimate |
+| Control flow that looks wrong but isn't | `reader.cancel()` resolving `read()` with `done: true` instead of rejecting |
+| A cross-file invariant | `_sse_token` ↔ `consumeQueryStream` must change together |
+
+**Does not warrant a comment:** anything a good name already says. Loop mechanics.
+Standard idioms. Restating a type hint.
+
+---
+
+## Before / after, from this codebase
+
+**Bad — narrates the code:**
+```python
+# Split the text into chunks
+chunks = chunk_text(text)
+# Store the chunks
+stored = self.store(chunks, source_name, extra_meta)
+```
+**Good — the same lines, commented only where there's a real "why":**
+```python
+chunks = chunk_text(text)
+stored = self.store(chunks, source_name, extra_meta)
+```
+Nothing here is surprising. The names carry it. Zero comments is correct.
+
+---
+
+**Bad — restates the call:**
+```python
+# Set the journal mode to WAL
+conn.execute("PRAGMA journal_mode=WAL")
+```
+**Good — explains the choice:**
+```python
+conn.execute("PRAGMA journal_mode=WAL")  # readers don't block the writer
+```
+
+---
+
+**Bad — describes what, not why:**
+```python
+# Only take the first 20 candidates
+fetch_n = min(TOP_K_CANDIDATES, collection.count())
+```
+**Good:**
+```python
+fetch_n = min(TOP_K_CANDIDATES, collection.count())  # Chroma errors if n > collection size
+```
+
+---
+
+**Bad — a comment covering for a vague name:**
+```python
+# the pool that bm25 rescopes over, not the whole corpus
+d = docs
+```
+**Good — rename instead of commenting:**
+```python
+vector_candidates = docs
+```
+
+---
+
+**Good — a genuine cross-file invariant that no name can express:**
+```python
+# BM25 runs over the vector candidates only (not the full corpus) — cheap
+# keyword re-scoring of an already-relevant pool
+tokenized = [doc.lower().split() for doc in docs]
+```
+
+---
+
+**Good — a bug that will silently come back if the reasoning is lost:**
+```tsx
+// Strip only the SSE line framing — never trim the payload. Model tokens are
+// frequently pure whitespace (" ") or carry a trailing space, and trimming the
+// frame silently drops them, rendering "12 multiplied by8 equals96".
+const line = frame.replace(/^\n+/, "").replace(/\r$/, "");
+```
+
+---
+
+## Python: section headers
+
+Use above a block that shifts concern — never on every block.
 
 ```python
 # -- Graph build worker -----------------------------------------------------
-graph_thread = threading.Thread(target=_run_graph_queue, daemon=True)
-graph_thread.start()
 ```
 
-**Rules:**
-- Format: `# -- Section name ----...` — two hyphens, a space, the name, then hyphens padding out to (approximately) the 100-char line length. Regular hyphens only, never em dashes `—`.
-- One blank line above the header, none between the header and the code it introduces
-- Style reference: `ingestion/queue.py` (see e.g. `# -- Worker ----...`, `# -- Public API ----...`)
+- Format: `# -- Name ---...` — two hyphens, space, name, hyphens padding toward col 100.
+  Regular hyphens only, never em dashes.
+- One blank line above; none between the header and the code it introduces.
+- Reference style: `ingestion/queue.py`, `utils/ollama_client.py`.
 
----
-
-## Python: Inline Comments
+## Python: inline comments
 
 ```python
-timeout=30 # Concurrent graph thread and queue worker both write to this DB
-score = outputs.logits.squeeze(-1).float() # Logits are unbounded; do not softmax
-model.transcribe(audio_path, fp16=False) # fp16 path has known MPS issues
-collection.query(where={"$and": [...]}) # Multi-field filter requires explicit $and
-RERANKER_MIN_SCORE = -8.0 # Empirically tuned - below this, chunks add noise
+timeout=30                          # graph thread and queue worker both write this DB
+model.transcribe(path, fp16=False)  # fp16 path has known MPS issues
+RERANKER_MIN_SCORE = -8.0           # empirically tuned - below this, chunks add noise
 ```
 
-**Rules:**
-- One space before `#`: `code # comment` — actually just one space before the `#`
-- Capitalize first letter in the comment unless it's referencing a parameter or something that should be lowercase
-- No period at end of inline comments
-- No em dash (—)
-- Explain *why*, not *what* — the code already says what
+- Two spaces before `#` (ruff format enforces this).
+- Capitalize unless the first word is an identifier that's genuinely lowercase.
+- No trailing period. No em dashes.
 
-**Deserves a comment:**
-- Non-obvious threshold or timeout value (why this number?)
-- A library workaround or known gotcha being handled
-- Race condition or concurrency guard
-- Surprising control flow (why is this returning early here?)
-- Non-obvious math or bit operation
+## Python: docstrings
 
-**Does NOT deserve a comment:**
-```python
-result = pipeline.forward(question, chunks) # Run the pipeline   ← NO
-return result # Return the result  ← NO
-user_id = get_user_id() # Get user id        ← NO
-```
-
----
-
-## Python: Docstrings
-
-Use a one-line docstring on public functions when the function name alone doesn't fully capture the contract:
+Every public function gets one. **Default to a single line.** The name plus type hints
+usually carry the contract:
 
 ```python
-def embed_batch(texts: list[str]) -> list[list[float]]:
-    """Embed texts in batches of EMBED_BATCH_SIZE to avoid OOM on large inputs."""
-    ...
+def has_graph(user_id: str) -> bool:
+    """Return True if the user has at least one node in their knowledge graph."""
 ```
 
-Skip the docstring if the name + type hints are self-documenting:
+Expand to multiple lines **only** when the function encodes something a caller would
+otherwise get wrong — a non-obvious contract, a failure mode, a hard-won gotcha. The
+codebase does this deliberately in a handful of places (`rerank()`,
+`search_summaries()`, `_sse_token()`, `enqueue_graph_build()`), and those are the right
+calls. Do not pad an obvious function into a paragraph to look thorough.
 
 ```python
-def get_user_id() -> str:
-    ...  # no docstring needed
+def rerank(question: str, docs: list[str], metas: list[dict], top_k: int = MAX_FINAL_RESULTS):
+    """
+    Rerank retrieved chunks using BGE-Reranker-v2-m3 cross-encoder.
+
+    Scores each (question, chunk) pair and returns the top_k results sorted by
+    relevance descending. Uses pure top-k ranking — raw cross-encoder scores are
+    not calibrated to a fixed cutoff, only relative ordering is meaningful.
+
+    Falls back to original order if loading fails.
+    """
 ```
 
-Never write multi-paragraph or multi-line docstrings. One sentence max.
-
----
-
-## TypeScript / TSX: Inline Comments
+## TypeScript / TSX
 
 ```tsx
-// pdfjs worker URL must match exact installed version — check node_modules/pdfjs-dist/package.json
-pdfjs.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/.../pdf.worker.min.mjs`
+// pdfjs worker URL must match the installed version exactly — check
+// node_modules/pdfjs-dist/package.json
+pdfjs.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/.../pdf.worker.min.mjs`;
 
-// options must be memoized — new object reference on every render triggers infinite reload loop
-const pdfOptions = useMemo(() => ({}), [])
-
-// abort any in-flight stream before starting a new one; 100ms lets the previous reader tear down
-await abortAndWait()
+// memoized to give Document a stable options reference; a new object each render
+// is an infinite reload loop
+const pdfOptions = useMemo(() => ({ cMapUrl: "/cmaps/" }), []);
 ```
 
-**Rules:**
-- Use `//` comments, not `/* */` (except for JSDoc on exported functions)
-- Same principle: *why*, not *what*
-- One blank line above a standalone comment block, not between comment and code
-
-**Hook dependency arrays** — always explain a non-obvious dependency choice:
+- `//`, not `/* */` (except JSDoc on exported types/functions).
+- Blank line above a standalone comment block; none between comment and code.
+- **Always explain a non-obvious hook dependency or memoization reason** — those are
+  exactly the lines a future reader will "clean up" and break.
 
 ```tsx
-useEffect(() => {
-  loadSources()
-}, [apiUrl])  // re-fetch when user changes API URL in settings
+useEffect(() => { loadSources(); }, [apiUrl]);  // re-fetch when API URL changes in settings
 ```
 
-**useCallback / useMemo** — comment when the memoization reason isn't obvious:
+Exported types earn JSDoc when a field's lifecycle isn't obvious:
 
-```tsx
-// memoized to give Document a stable options reference; new object = reload loop
-const pdfOptions = useMemo(() => ({ cMapUrl: '/cmaps/' }), [])
+```ts
+/** Client-side object URL for image thumbnails only — not persisted across reloads. */
+previewUrl?: string;
 ```
 
 ---
 
-## What Never Gets a Comment
+## Never comment these
 
 ```python
 x = x + 1
 chunks = []
-logger.info(f"Processing {source}")
 return result
 if not chunks:
     return []
 ```
-
 ```tsx
-const [isOpen, setIsOpen] = useState(false)
-return <div>{children}</div>
-onClick={() => setIsOpen(true)}
+const [isOpen, setIsOpen] = useState(false);
+return <div>{children}</div>;
 ```
 
-If you're writing a comment on a line like these, stop and ask whether the variable or function could be renamed to make the comment unnecessary instead.
+If you're about to comment a line like these, rename something instead.

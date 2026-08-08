@@ -1,75 +1,98 @@
 # RAGbase Update-README Skill
 
-## What Triggers a README Update
+`README.md` is the **only** public-facing document. Its audience is someone who has
+never seen the project and is deciding whether to run it — not a contributor. Everything
+internal belongs in `.ai/instructions.md` or `docs/CODEBASE_EXPLAINED.md` instead.
 
-- New major feature shipped (new ingestor type, new query mode, new UI panel)
-- Hardware requirement changed (new model pulled, new dependency)
-- Model stack changed (model added, removed, or swapped)
-- New script added to `scripts/`
-- Installation steps changed in `scripts/install.sh`
-- Architecture changed significantly (new service, removed component)
+## Triggers — be specific
 
-Do NOT update README for: internal refactors, bug fixes, config constant tweaks, or anything not visible to a first-time user.
+Update **only** when something changes that a first-time user would experience:
 
----
+| Change | Section |
+|---|---|
+| A new source type can be ingested (e.g. audio files) | Features |
+| A new user-visible mode or panel ships | Features |
+| A model is added, removed, or swapped in `config/models.py` | Model stack |
+| A model's size changes the total download footprint | Model stack, Hardware |
+| A prereq version changes in `scripts/install.sh` | Requirements, Setup |
+| A new script a user would run is added to `scripts/` | Setup or Resetting |
+| A top-level directory is added or removed | Directory structure |
+| What telemetry sends changes | Privacy |
 
-## README Sections
+**Not triggers:** internal refactors, bug fixes, config constant tweaks, new API
+endpoints, new components, anything under `.ai/`. If a user can't see it, it doesn't go
+in the README.
 
-The current README (`README.md`) has these sections, in order:
+## Current sections (in order)
 
-| Section | What it covers |
-|---------|---------------|
-| Header / tagline / screenshot | Project name, one-line pitch, `docs/screenshot.png` |
-| What it does | One-paragraph pitch — personal AI knowledge base, local-only, no cloud APIs |
-| Features | Bullet list of user-visible capabilities |
-| Requirements | OS, Ollama, Python, Node.js versions |
-| Setup | Numbered steps (install Ollama → Python → Node → clone+install → start), using `scripts/install.sh` |
-| Updating | `git pull` + `scripts/start.sh` (which self-updates) |
-| How it works | One paragraph: FastAPI + ChromaDB + SQLite graph + Next.js + Ollama, no Docker |
-| Model stack | Table: task → model, plus total footprint |
-| Hardware | Apple Silicon recommendation, RAM guidance |
-| Privacy | Telemetry explanation |
-| Resetting | `scripts/reset_all.sh` |
-| Directory structure | Top-level tree with one-line comments |
-| License | MIT |
+Header/tagline/screenshot · What it does · Features · Requirements · Setup · Updating ·
+How it works · Model stack · Hardware · Privacy · Resetting · Directory structure · License
 
-There is no "Configuration" or "Roadmap" section in the current README — do not add one unless
-the user explicitly asks for it.
+There is no Configuration or Roadmap section. **Do not add one unless asked.**
 
----
+## Good vs bad edits
 
-## Before Editing
+**Bad — internal detail a user can't act on:**
+> - Retrieval uses reciprocal rank fusion with k=60 over a 20-candidate pool.
 
-1. Read the current README top to bottom.
-2. Cross-check the **Model stack** table against `config/models.py` — they must match exactly.
-3. Cross-check **Requirements**/**Setup** against the prereq checks in `scripts/install.sh`
-   (note: `install.sh` checks for Python 3.11+, but `pyproject.toml` requires `>=3.13` — if you
-   touch this section, flag rather than silently resolving the discrepancy).
-4. Cross-check the **Directory structure** section against the actual top-level layout.
+**Good — the user-visible capability:**
+> - Hybrid keyword + semantic search, so exact terms like error codes still match.
 
 ---
 
-## Tone and Style
+**Bad — marketing:**
+> RAGbase is a blazing-fast, revolutionary knowledge base that seamlessly unifies all
+> your data.
 
-- Clear and technical but approachable. Explain abbreviations on first use.
-- Second person ("you") for instructions.
-- Present tense for descriptions ("RAGbase runs entirely on your Mac").
-- Use code blocks for all commands, file paths, and config values.
-- No marketing language — no "blazing fast", "revolutionary", "seamless".
+**Good — plain and concrete:**
+> RAGbase ingests your notes, PDFs, images and videos, then answers questions about them
+> with citations. Everything runs on your own machine.
 
 ---
 
-## What NOT to Change
+**Bad — a setup step that can't be verified:**
+> Install the required dependencies and start the app.
 
-- **License section** — MIT, text verbatim.
-- **Privacy section** — wording around telemetry must be accurate; only `device_id` is sent, never user content. Do not soften or strengthen this claim without verifying `utils/telemetry.py`.
+**Good — exact, copy-pasteable, matches `install.sh`:**
+> ```bash
+> bash scripts/install.sh
+> bash scripts/start.sh
+> ```
+
+---
+
+**Bad — a model table that drifted from the code:**
+> | Answering | llama3.1:8b |
+
+**Good — matches `config/models.py` exactly, with the user-relevant framing:**
+> | Answering questions | `qwen3` | 5.2 GB |
+
+## Before editing
+
+1. Read the whole README first.
+2. Cross-check the **Model stack** table against `config/models.py` — must match exactly.
+   Get sizes from `ollama list`.
+3. Cross-check **Requirements**/**Setup** against the prereq checks in
+   `scripts/install.sh`. Both it and `pyproject.toml` require Python 3.13+ — if you
+   change one, change the other.
+4. Cross-check **Directory structure** against the actual top-level layout.
+
+## Tone
+
+Second person for instructions ("you"), present tense for description ("RAGbase runs
+entirely on your Mac"). Technical but approachable; expand abbreviations on first use.
+Code blocks for every command, path and config value. No marketing adjectives.
+
+## Never change without verifying
+
+- **License** — MIT, verbatim.
+- **Privacy** — only `device_id` and event metadata are sent, never `user_id` and never
+  user content. Re-read `utils/telemetry.py` before touching a single word here.
 - **GitHub URL** — `github.com/tlayers21/ragbase`.
 
----
+## After editing
 
-## After Editing
-
-- Verify all `bash` code blocks are valid shell commands.
-- Verify the Model stack table matches `config/models.py`.
-- Verify Requirements/Setup match `scripts/install.sh` prereq checks.
-- Verify the Directory structure section matches the actual top-level layout.
+- Every `bash` block is a valid, runnable command.
+- Model stack table == `config/models.py`.
+- Requirements/Setup == `scripts/install.sh`.
+- Directory structure == actual top-level layout.

@@ -132,12 +132,29 @@ def vision(image_path: str | Path, prompt: str, task: str = "vision_handwrite") 
     return response["message"]["content"]
 
 
-def generate_stream(prompt: str, system: str | None = None, model: str | None = None):
-    """Stream output tokens for UI responses."""
+def generate_stream(
+    prompt: str,
+    system: str | None = None,
+    model: str | None = None,
+    think: bool | None = None,
+):
+    """
+    Stream output tokens for UI responses.
+
+    `think` is Ollama's thinking toggle for reasoning models like qwen3. Leave it
+    None to keep the model's default; pass False to suppress the reasoning pass
+    entirely. Do *not* try to do this by putting `/no_think` in the prompt — that
+    soft switch is not honored here and the literal text only confuses the model
+    (see §8 of `.ai/instructions.md`).
+    """
     model = model or get_model("answer")
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
-    for chunk in ollama.chat(model=model, messages=messages, stream=True):
+
+    # Only forward the option when explicitly set — sending think=None would
+    # override the model's own default rather than defer to it.
+    kwargs = {} if think is None else {"think": think}
+    for chunk in ollama.chat(model=model, messages=messages, stream=True, **kwargs):
         yield chunk["message"]["content"]

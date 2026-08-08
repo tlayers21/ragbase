@@ -109,7 +109,7 @@ When a new library is added to the project:
 2. Create `.ai/docs/{library-name}.md` with the standard header.
 3. Add a row to the library table in `.ai/skills/master.md`.
 4. Add the skill table row in this file above.
-5. The `.ai/docs/` directory is gitignored — no commit needed for the doc file itself.
+5. The new file is tracked by git like the rest of `.ai/docs/` — include it in the commit.
 
 ---
 
@@ -123,17 +123,19 @@ that accumulates between refreshes:
   Actually all four current signatures (`RAGAnswerer`, `TextCleanup`,
   `TranscriptionRefinement`, `QueryRewriter`) use `dspy.Predict` per
   `.ai/instructions.md`. Corrected.
-- **Docling** — old notes implied RapidOCR is Docling's default OCR engine.
-  Official docs show **EasyOCR is the actual default** when `do_ocr=True`;
-  RapidOCR is opt-in via `ocr_options=`. This doc-refresh session assumed
-  RAGbase configured RapidOCR explicitly (carrying the old file's claim
-  forward) and only noted the framing was wrong. A later full code audit
-  (2026-08-06, same day) found that assumption was itself wrong: `ingestion/
-  pdf.py::extract_text()` sets no `ocr_options=` at all, and `rapidocr` isn't
-  even a declared dependency — RAGbase is actually running Docling's default
-  EasyOCR for typed-PDF OCR, not RapidOCR. Lesson: when a cached file's
-  RAGbase-specific notes make a claim about the codebase, verify it against
-  the actual code during a docs refresh, don't just carry it forward as fact.
+- **Docling** — the cautionary tale, wrong three times in a row. (1) Old notes said
+  RAGbase configured RapidOCR explicitly. (2) The 2026-08-06 refresh "corrected" that
+  to "EasyOCR is Docling's default," reading the official docs but not the code.
+  (3) The 2026-08-07 audit **ran it** and found both wrong: the installed version's
+  `PdfPipelineOptions().ocr_options.kind` is `"auto"`, which resolves to whichever
+  engine is installed — RapidOCR here, because `easyocr` isn't installed at all. So
+  the original claim was accidentally right, for a reason nobody had established.
+  `ingestion/pdf.py` now pins `ocr_options=RapidOcrOptions()` and `rapidocr` is a
+  declared dependency, so the behavior no longer depends on what happens to be present.
+
+  **Lesson: for any claim about *this* codebase, run the code — don't read the official
+  docs and don't carry the previous note forward.** One `python3 -c` against the
+  installed package would have settled this on the first pass.
 - **Whisper** — old cache's example used `whisper.load_model("small")`,
   contradicting `.ai/instructions.md`'s statement that RAGbase loads
   `"base"`. Corrected to `"base"`. Also: Whisper's own `load_model()` device
@@ -149,8 +151,40 @@ that accumulates between refreshes:
 None of the 12 libraries needed a WebFetch fallback — Context7 resolved and
 answered queries for all of them (see the "In practice" note above).
 
+### Which libraries drift most
+
+Ranked by how often the cache has been wrong, so you know where to look hardest:
+
+1. **Docling** — worst offender, twice over. Both the default-OCR-engine claim *and*
+   the assertion that RAGbase configured RapidOCR were wrong. Its API surface
+   (`PdfFormatOption`, `PdfPipelineOptions`, `doc.texts` vs `doc.pages`) also moves
+   between minor versions. **Always verify Docling claims against both the docs and
+   `ingestion/pdf.py`.**
+2. **react-markdown** — v10 removed the `inline` prop from custom `code` components.
+   Major-version renders of the component API change silently.
+3. **DSPy** — pre-3.x examples dominate training data and the web; `Predict` vs
+   `ChainOfThought` and `dspy.LM(...)` construction are both commonly stale.
+4. **Whisper** — examples vary the model size freely, and `load_model()` still has no
+   MPS auto-detection, which surprises people every time.
+5. **KaTeX** — small but persistent option-default errors (`output` defaults to
+   `'htmlAndMathml'`, not `'html'`).
+
+ChromaDB, FastAPI, Ollama, PyMuPDF, transformers, react-pdf and Next.js have been
+comparatively stable, but Next.js 16 is new enough that training data skews old — check
+`frontend/node_modules/next/dist/docs/` rather than trusting recall.
+
+### The standing lesson
+
+A cached file's `## RAGbase-Specific Notes` section makes claims **about this codebase**,
+not about the library. Those decay independently of the library version and have been
+wrong more often than the official content. **Re-verify every RAGbase-specific claim
+against the actual source during a refresh — never carry one forward as fact.**
+
 ---
 
 ## Important
 
-`.ai/docs/` is listed in `.gitignore` — these files are local developer context only and are never committed. They can be regenerated at any time via Context7.
+**`.ai/docs/` is committed to git** — all 12 files are tracked (`git ls-files .ai/docs/`
+confirms it; there is no `.gitignore` entry for them). An earlier version of this skill
+claimed the opposite. That means a refresh is a real repo change and shows up in diffs —
+regenerate deliberately, not casually, and mention it when you do.

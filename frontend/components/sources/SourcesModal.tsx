@@ -3,7 +3,14 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import dynamic from "next/dynamic";
 import { X, Search, Trash2, FileText, Loader2, ChevronLeft } from "lucide-react";
-import { fetchSources, deleteSource as apiDeleteSource, cancelIngestion, getSourceFileUrl, fetchSourceText } from "@/lib/api";
+import {
+  fetchSources,
+  deleteSource as apiDeleteSource,
+  cancelIngestion,
+  getSourceFileUrl,
+  fetchSourceText,
+  fetchSourceType,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { SourceSummary } from "@/types";
 
@@ -34,32 +41,37 @@ function SourceThumbnail({ source }: { source: string }) {
     const el = containerRef.current;
     if (!el) return;
 
+    // Aborted on unmount. The card grid unmounts the instant a preview opens, and
+    // a HEAD left in flight then fails as net::ERR_FAILED — which Chrome surfaces
+    // as a misleading CORS error and which raced the preview's own request.
+    const controller = new AbortController();
+
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (!entry.isIntersecting) return;
         observer.disconnect();
         setState({ status: "loading" });
 
-        fetch(fileUrl, { method: "HEAD" })
-          .then((r) => {
-            if (!r.ok) { setState({ status: "none" }); return; }
-            const ct = r.headers.get("content-type") ?? "";
-            if (ct.includes("pdf")) {
-              setState({ status: "pdf" });
-            } else if (ct.startsWith("image/")) {
-              setState({ status: "image" });
-            } else {
-              fetchSourceText(source).then((text) => {
-                setState({ status: "text", content: text.slice(0, 300) });
-              }).catch(() => setState({ status: "none" }));
+        fetchSourceType(source, controller.signal)
+          .then(async (type) => {
+            if (type !== "text") {
+              setState({ status: type });
+              return;
             }
+            const text = await fetchSourceText(source, controller.signal);
+            setState({ status: "text", content: text.slice(0, 300) });
           })
-          .catch(() => setState({ status: "none" }));
+          .catch((err: Error) => {
+            if (err.name !== "AbortError") setState({ status: "none" });
+          });
       },
       { rootMargin: "50px" }
     );
     observer.observe(el);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      controller.abort();
+    };
   }, [fileUrl, source]);
 
   return (
@@ -76,8 +88,10 @@ function SourceThumbnail({ source }: { source: string }) {
         </div>
       )}
       {state.status === "image" && (
+        // crossOrigin makes this a CORS request like the fetch() above, so both
+        // share one cache entry — see the Vary: Origin note in api/sources.py.
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={fileUrl} alt="" className="w-full h-full object-cover" />
+        <img src={fileUrl} alt="" crossOrigin="anonymous" className="w-full h-full object-cover" />
       )}
       {state.status === "text" && (
         <div className="relative w-full h-full overflow-hidden">
@@ -114,27 +128,25 @@ function PreviewPane({ source, onClose }: PreviewPaneProps) {
     setType(null);
     setTextContent(null);
 
-    // HEAD the file to detect Content-Type
-    fetch(fileUrl, { method: "HEAD" })
-      .then((r) => {
-        if (!r.ok) throw new Error(`${r.status}`);
-        const ct = r.headers.get("content-type") ?? "";
-        if (ct.includes("pdf")) return "pdf" as SourceType;
-        if (ct.startsWith("image/")) return "image" as SourceType;
-        return "text" as SourceType;
-      })
+    // Aborted on unmount/source change so a superseded request can't fail late and
+    // paint "Preview unavailable" over a preview that actually loaded fine.
+    const controller = new AbortController();
+
+    fetchSourceType(source.source, controller.signal)
       .then(async (detectedType) => {
         setType(detectedType);
         if (detectedType === "text") {
-          const text = await fetchSourceText(source.source);
-          setTextContent(text);
+          setTextContent(await fetchSourceText(source.source, controller.signal));
         }
         setIsLoading(false);
       })
-      .catch((e) => {
-        setError(e.message);
+      .catch((err: Error) => {
+        if (err.name === "AbortError") return;
+        setError(err.message);
         setIsLoading(false);
       });
+
+    return () => controller.abort();
   }, [source.source, fileUrl]);
 
   return (
@@ -183,6 +195,7 @@ function PreviewPane({ source, onClose }: PreviewPaneProps) {
             <img
               src={fileUrl}
               alt={source.source}
+              crossOrigin="anonymous"
               className="max-w-full max-h-[60vh] rounded-lg object-contain"
             />
           </div>

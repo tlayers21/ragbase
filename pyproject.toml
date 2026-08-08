@@ -17,7 +17,17 @@ dependencies = [
     "rank-bm25>=0.2.2",
     "pdf2image>=1.16.0",
     "pillow>=10.0.0",
+    # Primary extractor for office formats and typed PDFs (ingestion/office.py,
+    # ingestion/pdf.py). Pure Rust wheel — no ML models, no system dependencies,
+    # nothing to add to scripts/install.sh.
+    "firecrawl-anydoc>=0.1.7",
+    # Fallback extractor for PDFs anydoc declines: oversized files and unexpected
+    # conversion failures. Also the only source of figure detection.
     "docling>=2.0.0",
+    # Pinned explicitly in ingestion/pdf.py via RapidOcrOptions. Docling's default
+    # ocr_options.kind is "auto", which silently resolves to whichever engine is
+    # installed — declaring this keeps typed-PDF OCR reproducible.
+    "rapidocr>=3.0.0",
     "openai-whisper>=20230918",
     "yt-dlp>=2023.0.0",
     "ollama>=0.1.0",

@@ -3,23 +3,27 @@
 import { useState, useCallback, useRef } from "react";
 import { Upload, FolderOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ACCEPTED_INGEST_TYPES } from "@/lib/config";
 
 interface DropZoneProps {
-  onDrop: (files: File[]) => void;
+  onDrop: (files: File[], describeImages: boolean) => void;
   isUploading: boolean;
 }
 
 export function DropZone({ onDrop, isUploading }: DropZoneProps) {
   const [isDragging, setIsDragging] = useState(false);
+  // Off by default: describing figures needs a Docling layout pass on top of the
+  // anydoc extraction, which turns a seconds-long ingest into a minutes-long one.
+  const [describeImages, setDescribeImages] = useState(false);
   const dragCounterRef = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleFiles = useCallback(
     (files: FileList | null) => {
       if (!files || files.length === 0) return;
-      onDrop(Array.from(files));
+      onDrop(Array.from(files), describeImages);
     },
-    [onDrop]
+    [onDrop, describeImages]
   );
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
@@ -69,6 +73,7 @@ export function DropZone({ onDrop, isUploading }: DropZoneProps) {
         ref={inputRef}
         type="file"
         multiple
+        accept={ACCEPTED_INGEST_TYPES}
         className="hidden"
         onChange={(e) => handleFiles(e.target.files)}
         disabled={isUploading}
@@ -94,6 +99,16 @@ export function DropZone({ onDrop, isUploading }: DropZoneProps) {
             <FolderOpen className="h-3 w-3" />
             Browse files
           </button>
+
+          <label className="mt-1 flex cursor-pointer items-center gap-1.5 text-[10px] text-foreground-muted hover:text-foreground transition-colors">
+            <input
+              type="checkbox"
+              checked={describeImages}
+              onChange={(e) => setDescribeImages(e.target.checked)}
+              className="h-3 w-3 cursor-pointer accent-primary"
+            />
+            Describe diagrams (slower, PDFs only)
+          </label>
         </div>
       )}
     </div>

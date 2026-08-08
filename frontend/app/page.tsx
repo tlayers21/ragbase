@@ -127,9 +127,9 @@ export default function HomePage() {
   );
 
   const handleDropFiles = useCallback(
-    async (files: File[]) => {
+    async (files: File[], describeImages = false) => {
       for (const file of files) {
-        await uploadFile(file);
+        await uploadFile(file, describeImages);
       }
     },
     [uploadFile]

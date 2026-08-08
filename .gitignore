@@ -19,6 +19,11 @@ data/cache.db*
 data/user_id.txt
 data/device_id.txt
 data/settings.json
+# Created by reset_all.sh, consumed and deleted by GET /sessions/should_reset —
+# a runtime signal, not source. Was tracked, which left the repo showing a
+# deletion after every reset; run `git rm --cached data/reset_sessions_flag` once
+# to finish untracking it.
+data/reset_sessions_flag
 data/history.json
 history.json
 eval_set.json

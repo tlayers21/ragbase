@@ -15,6 +15,7 @@ from config.logging import setup_logging
 from config.models import get_model
 from config.runtime import USER_ID
 from config.settings import (
+    ANSWER_THINKING_ENABLED,
     ATTACHMENT_TEXT_MAX_CHARS,
     SUPPORTED_IMAGE_EXTENSIONS,
     SUPPORTED_PDF_EXTENSIONS,
@@ -50,6 +51,37 @@ _SYSTEM_PROMPT = (
 )
 
 
+def _answer_stream(prompt: str) -> Generator[str, None, None]:
+    """
+    The single entry point for every user-facing answer.
+
+    All six generation call sites in this module previously repeated
+    `system=_SYSTEM_PROMPT, model=get_model("answer")`; funnelling them through
+    here means the thinking toggle can't be applied to five of them and forgotten
+    on the sixth.
+    """
+    return generate_stream(
+        prompt,
+        system=_SYSTEM_PROMPT,
+        model=get_model("answer"),
+        think=ANSWER_THINKING_ENABLED,
+    )
+
+
+def _sse_token(token: str) -> str:
+    """Frame one model token as an SSE event.
+
+    The token is JSON-encoded because SSE frames are delimited by a blank line and
+    answers are markdown: a raw ``\\n`` inside ``data: {token}\\n\\n`` collides with
+    that delimiter, so every newline token was silently swallowed and lists,
+    paragraphs and headings all collapsed onto one line. JSON escapes newlines to
+    ``\\n`` literals, so whitespace survives the wire intact. Control frames keep
+    their bare ``[MARKER]`` prefix, which stays unambiguous because a JSON-encoded
+    token always starts with a quote.
+    """
+    return f"data: {json.dumps(token)}\n\n"
+
+
 class QueryRequest(BaseModel):
     question: str
     history: list[dict] = []
@@ -79,7 +111,7 @@ async def query(req: QueryRequest):
         # Cache hit: reuse retrieved context, generate a fresh answer for the new question.
         history_str = format_history(req.history)
         prompt = build_answer_prompt(req.question, cached["context"], history_str)
-        answer = "".join(generate_stream(prompt, system=_SYSTEM_PROMPT, model=get_model("answer")))
+        answer = "".join(_answer_stream(prompt))
         latency = time.time() - t0
         logger.info(f"Cache hit — response in {latency:.2f}s")
         send_telemetry(
@@ -96,7 +128,7 @@ async def query(req: QueryRequest):
         source_filter=req.source_filter,
     )
     prompt = build_answer_prompt(req.question, retrieval["context"], retrieval["history_str"])
-    answer = "".join(generate_stream(prompt, system=_SYSTEM_PROMPT, model=get_model("answer")))
+    answer = "".join(_answer_stream(prompt))
 
     set_cached_response(
         USER_ID,
@@ -131,7 +163,7 @@ async def query_stream(req: QueryRequest, request: Request) -> StreamingResponse
     Same retrieval as /query, but streams progress and the answer as
     Server-Sent Events. `data: [STAGE]{"stage": ...}\\n\\n` events mark
     retrieval/reranking/generation as they begin, followed by token events
-    (`data: {token}\\n\\n`), a `data: [SOURCES]{json}\\n\\n` citation event,
+    (`data: {json-encoded token}\\n\\n`), a `data: [SOURCES]{json}\\n\\n` citation event,
     and `data: [DONE]\\n\\n`. `data: [HEARTBEAT]\\n\\n` keep-alive events are
     emitted before each blocking call so the connection does not time out.
     """
@@ -142,28 +174,60 @@ async def query_stream(req: QueryRequest, request: Request) -> StreamingResponse
         history_str = format_history(req.history)
 
         yield f"data: [STAGE]{json.dumps({'stage': 'retrieving_sources'})}\n\n"
-        if has_graph(USER_ID):
-            yield f"data: [STAGE]{json.dumps({'stage': 'traversing_graph'})}\n\n"
-        yield "data: [HEARTBEAT]\n\n"
-        docs, metas = await asyncio.to_thread(
-            _pipeline.search_candidates,
-            query=req.question,
-            user_id=USER_ID,
-            source_filter=req.source_filter,
-        )
 
-        yield f"data: [STAGE]{json.dumps({'stage': 'reranking'})}\n\n"
-        yield "data: [HEARTBEAT]\n\n"
-        docs, metas, scores = await asyncio.to_thread(
-            _pipeline.rerank_candidates, req.question, docs, metas
-        )
+        # The semantic cache is keyed on the query embedding, so a paraphrase of an
+        # earlier question reuses its retrieval and skips stages 1-4 entirely. Only
+        # the retrieval context is reused — the answer is always regenerated against
+        # the wording actually asked. Source-filtered queries bypass the cache: the
+        # cached context was built under a different filter and would leak chunks
+        # from sources the user has deselected.
+        cached = None
+        if not req.source_filter:
+            query_embedding = await asyncio.to_thread(embed, req.question)
+            cached = await asyncio.to_thread(get_cached_response, USER_ID, query_embedding)
 
-        context = build_context(docs, metas)
-        sources = list({meta["source"] for meta in metas})
-        chunks = [
-            {"source": meta["source"], "text": doc, "score": round(score, 3)}
-            for doc, meta, score in zip(docs, metas, scores)
-        ]
+        if cached:
+            context = cached["context"]
+            sources = cached["sources"]
+            scores = cached["scores"]
+            chunks = cached.get("chunks", [])  # entries cached before chunks were stored
+        else:
+            if has_graph(USER_ID):
+                yield f"data: [STAGE]{json.dumps({'stage': 'traversing_graph'})}\n\n"
+            yield "data: [HEARTBEAT]\n\n"
+            docs, metas = await asyncio.to_thread(
+                _pipeline.search_candidates,
+                query=req.question,
+                user_id=USER_ID,
+                source_filter=req.source_filter,
+            )
+
+            yield f"data: [STAGE]{json.dumps({'stage': 'reranking'})}\n\n"
+            yield "data: [HEARTBEAT]\n\n"
+            docs, metas, scores = await asyncio.to_thread(
+                _pipeline.rerank_candidates, req.question, docs, metas
+            )
+
+            context = build_context(docs, metas)
+            sources = list({meta["source"] for meta in metas})
+            chunks = [
+                {"source": meta["source"], "text": doc, "score": round(score, 3)}
+                for doc, meta, score in zip(docs, metas, scores)
+            ]
+
+            if not req.source_filter:
+                await asyncio.to_thread(
+                    set_cached_response,
+                    USER_ID,
+                    query_embedding,
+                    {
+                        "context": context,
+                        "sources": sources,
+                        "scores": scores,
+                        "chunks": chunks,
+                    },
+                )
+
         prompt = build_answer_prompt(req.question, context, history_str)
 
         if await request.is_disconnected():
@@ -171,18 +235,23 @@ async def query_stream(req: QueryRequest, request: Request) -> StreamingResponse
 
         logger.info("Emitting [STAGE] generating")
         yield f"data: [STAGE]{json.dumps({'stage': 'generating'})}\n\n"
-        for token in generate_stream(prompt, system=_SYSTEM_PROMPT, model=get_model("answer")):
-            yield f"data: {token}\n\n"
+        for token in _answer_stream(prompt):
+            if token:
+                yield _sse_token(token)
 
         sources_payload = json.dumps({"sources": sources, "scores": scores, "chunks": chunks})
         yield f"data: [SOURCES]{sources_payload}\n\n"
         yield "data: [DONE]\n\n"
 
         latency = time.time() - t0
-        logger.info(f"Streaming query latency: {latency:.2f}s")
+        logger.info(f"Streaming query latency: {latency:.2f}s (cache_hit={bool(cached)})")
         send_telemetry(
             "query_rag",
-            {"latency": round(latency, 2), "question_len": len(req.question)},
+            {
+                "latency": round(latency, 2),
+                "question_len": len(req.question),
+                "cache_hit": bool(cached),
+            },
         )
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
@@ -205,8 +274,9 @@ async def query_direct(req: QueryRequest) -> StreamingResponse:
         prompt = build_direct_prompt(req.question, history_str)
 
         yield f"data: [STAGE]{json.dumps({'stage': 'generating'})}\n\n"
-        for token in generate_stream(prompt, system=_SYSTEM_PROMPT, model=get_model("answer")):
-            yield f"data: {token}\n\n"
+        for token in _answer_stream(prompt):
+            if token:
+                yield _sse_token(token)
 
         yield f"data: [SOURCES]{json.dumps({'sources': [], 'scores': []})}\n\n"
         yield "data: [DONE]\n\n"
@@ -354,10 +424,9 @@ async def query_with_attachments(
             if direct:
                 prompt = build_direct_prompt(augmented_question, history_str)
                 yield f"data: [STAGE]{json.dumps({'stage': 'generating'})}\n\n"
-                for token in generate_stream(
-                    prompt, system=_SYSTEM_PROMPT, model=get_model("answer")
-                ):
-                    yield f"data: {token}\n\n"
+                for token in _answer_stream(prompt):
+                    if token:
+                        yield _sse_token(token)
                 yield f"data: [SOURCES]{json.dumps({'sources': [], 'scores': []})}\n\n"
             else:
                 yield f"data: [STAGE]{json.dumps({'stage': 'retrieving_sources'})}\n\n"
@@ -386,10 +455,9 @@ async def query_with_attachments(
                 prompt = build_answer_prompt(augmented_question, context, history_str)
 
                 yield f"data: [STAGE]{json.dumps({'stage': 'generating'})}\n\n"
-                for token in generate_stream(
-                    prompt, system=_SYSTEM_PROMPT, model=get_model("answer")
-                ):
-                    yield f"data: {token}\n\n"
+                for token in _answer_stream(prompt):
+                    if token:
+                        yield _sse_token(token)
 
                 sources_payload = json.dumps(
                     {"sources": sources, "scores": scores, "chunks": chunks}

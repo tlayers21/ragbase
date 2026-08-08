@@ -45,9 +45,21 @@ async def get_source_file(source: str, request: Request):
         _KNOWN_MIME.get(suffix) or mimetypes.guess_type(str(path))[0] or "application/octet-stream"
     )
 
+    # This URL is fetched two ways: as a plain <img src> (no Origin header, so
+    # CORSMiddleware adds no Access-Control-Allow-Origin) and via fetch() (a CORS
+    # request that requires it). Without Vary the browser reuses the cached
+    # non-CORS response for the CORS request, which then fails the origin check —
+    # surfacing as a bogus "blocked by CORS policy" error on a file that serves
+    # fine. Varying on Origin keeps the two cache entries separate.
+    headers = {"Vary": "Origin"}
+
     if request.method == "HEAD":
         return Response(
-            headers={"Content-Type": media_type, "Content-Length": str(path.stat().st_size)}
+            headers={
+                **headers,
+                "Content-Type": media_type,
+                "Content-Length": str(path.stat().st_size),
+            }
         )
 
-    return FileResponse(path=str(path), media_type=media_type, filename=path.name)
+    return FileResponse(path=str(path), media_type=media_type, filename=path.name, headers=headers)

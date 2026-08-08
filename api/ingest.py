@@ -38,8 +38,14 @@ def _save_source_file(source: str, suffix: str, data: bytes) -> None:
 async def ingest_file(
     file: UploadFile,
     source: str = Form(...),
+    describe_images: bool = Form(False),
 ):
-    """Upload a file for ingestion. Returns a job ID immediately."""
+    """
+    Upload a file for ingestion. Returns a job ID immediately.
+
+    `describe_images` is the per-file "Describe diagrams" opt-in and applies to PDFs
+    only; every other format ignores it.
+    """
     file_bytes = await file.read()
     suffix = Path(file.filename or "").suffix.lower() or ".bin"
     _save_source_file(source, suffix, file_bytes)
@@ -48,6 +54,7 @@ async def ingest_file(
         filename=file.filename,
         source=source,
         user_id=USER_ID,
+        describe_images=describe_images,
     )
     return {"job_id": job_id, "status": "queued"}
 

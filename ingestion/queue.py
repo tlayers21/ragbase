@@ -10,6 +10,7 @@ from config.logging import setup_logging
 from config.paths import QUEUE_STATUS_PATH
 from config.settings import (
     SUPPORTED_IMAGE_EXTENSIONS,
+    SUPPORTED_OFFICE_EXTENSIONS,
     SUPPORTED_PDF_EXTENSIONS,
     SUPPORTED_TEXT_EXTENSIONS,
     SUPPORTED_VIDEO_EXTENSIONS,
@@ -28,6 +29,22 @@ _ACTIVE_STATUSES = {"queued", "ingesting", "ingested", "waiting_for_graph", "bui
 
 
 # -- Status file helpers ---------------------------------------------------
+# Every status update is a read-modify-write of one shared JSON file, performed by
+# the ingestion worker, the graph worker and API request threads concurrently. Two
+# problems follow, and this lock is what prevents both:
+#   1. Lost updates — two threads load the same list, each edits one job, and the
+#      second write discards the first thread's edit.
+#   2. A crash — both threads used to write the same "queue_status.json.tmp" path,
+#      so whichever called os.replace() second hit FileNotFoundError and blew up
+#      its caller. That took out graph-build callbacks and left the status file
+#      empty, so the UI showed no jobs at all. It only became easy to hit once
+#      anydoc made Phase 1 fast enough to overlap with the previous job's graph
+#      enqueue; with Docling taking minutes, the window was rarely open.
+# The unique temp name below is belt-and-braces for anything holding a stale
+# reference to these helpers from outside the lock.
+_status_lock = threading.RLock()
+
+
 def _load_status() -> list:
     if not QUEUE_STATUS_PATH.exists():
         return []
@@ -41,29 +58,36 @@ def _load_status() -> list:
 
 def _save_status(status: list) -> None:
     """Atomic write to prevent corruption on shutdown."""
-    tmp = str(QUEUE_STATUS_PATH) + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(status, f)
-    os.replace(tmp, QUEUE_STATUS_PATH)
+    fd, tmp = tempfile.mkstemp(dir=QUEUE_STATUS_PATH.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(status, f)
+        os.replace(tmp, QUEUE_STATUS_PATH)
+    except Exception:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
 
 
 def _update_job(job_id: str, new_status: str) -> None:
-    status = _load_status()
-    for job in status:
-        if job["id"] == job_id:
-            job["status"] = new_status
-            break
-    _save_status(status)
+    with _status_lock:
+        status = _load_status()
+        for job in status:
+            if job["id"] == job_id:
+                job["status"] = new_status
+                break
+        _save_status(status)
 
 
 def update_job_estimate(job_id: str, estimated_seconds: int) -> None:
     """Update the time estimate for an active job."""
-    status = _load_status()
-    for job in status:
-        if job["id"] == job_id:
-            job["estimated_seconds"] = estimated_seconds
-            break
-    _save_status(status)
+    with _status_lock:
+        status = _load_status()
+        for job in status:
+            if job["id"] == job_id:
+                job["estimated_seconds"] = estimated_seconds
+                break
+        _save_status(status)
 
 
 def _find_active_job(source: str, user_id: str) -> dict | None:
@@ -79,34 +103,39 @@ def _find_active_job(source: str, user_id: str) -> dict | None:
 
 
 def _add_job(job: dict) -> None:
-    status = _load_status()
-    job_record = {**job, "status": "queued"}
-    status.append(job_record)
-    _save_status(status)
+    with _status_lock:
+        status = _load_status()
+        job_record = {**job, "status": "queued"}
+        status.append(job_record)
+        _save_status(status)
 
 
 def _requeue_recovered_jobs() -> int:
     """Recover queued jobs from disk after a restart."""
-    status = _load_status()
     recovered = 0
-    changed = False
 
-    for job in status:
-        job_status = job.get("status")
-        if job_status in _ACTIVE_STATUSES:
-            if job_status != "queued":
-                job["status"] = "queued"
-                changed = True
+    with _status_lock:
+        status = _load_status()
+        changed = False
 
-            if not job.get("source") or not job.get("user_id") or "tmp_path" not in job:
-                logger.warning(f"Skipping unrecoverable queued job '{job.get('id')}' after restart")
-                continue
+        for job in status:
+            job_status = job.get("status")
+            if job_status in _ACTIVE_STATUSES:
+                if job_status != "queued":
+                    job["status"] = "queued"
+                    changed = True
 
-            _queue.put(job)
-            recovered += 1
+                if not job.get("source") or not job.get("user_id") or "tmp_path" not in job:
+                    logger.warning(
+                        f"Skipping unrecoverable queued job '{job.get('id')}' after restart"
+                    )
+                    continue
 
-    if changed:
-        _save_status(status)
+                _queue.put(job)
+                recovered += 1
+
+        if changed:
+            _save_status(status)
 
     return recovered
 
@@ -135,7 +164,15 @@ def _worker():
             if suffix in SUPPORTED_PDF_EXTENSIONS:
                 from ingestion.pdf import PdfIngestor
 
-                ingestor = PdfIngestor(user_id, job_id=job_id)
+                ingestor = PdfIngestor(
+                    user_id, job_id=job_id, describe_images=job.get("describe_images", False)
+                )
+                ingestor.ingest(tmp_path, source)
+
+            elif suffix in SUPPORTED_OFFICE_EXTENSIONS:
+                from ingestion.office import OfficeIngestor
+
+                ingestor = OfficeIngestor(user_id, job_id=job_id)
                 ingestor.ingest(tmp_path, source)
 
             elif suffix in SUPPORTED_IMAGE_EXTENSIONS:
@@ -241,10 +278,14 @@ def enqueue(
     filename: str,
     source: str,
     user_id: str,
+    describe_images: bool = False,
 ) -> str:
     """
     Add a file to the ingestion queue. Saves file to a temp location
     and returns the job ID. The worker processes it in the background.
+
+    `describe_images` only affects PDFs — it turns on the opt-in Docling + VLM
+    figure-description pass (see PdfIngestor).
     """
     suffix = Path(filename).suffix.lower()
     existing = _find_active_job(source, user_id)
@@ -270,6 +311,9 @@ def enqueue(
         estimated_seconds = max(5, int(file_size_mb * 1.0))
     elif suffix in SUPPORTED_TEXT_EXTENSIONS:
         estimated_seconds = 3
+    elif suffix in SUPPORTED_OFFICE_EXTENSIONS:
+        # anydoc conversion is near-instant; the summary LLM call dominates.
+        estimated_seconds = 10
     else:
         estimated_seconds = 30
 
@@ -281,6 +325,7 @@ def enqueue(
         "suffix": suffix,
         "tmp_path": tmp_path,
         "estimated_seconds": estimated_seconds,
+        "describe_images": describe_images,
     }
 
     _add_job(job)
@@ -357,15 +402,16 @@ def enqueue_text(text: str, source: str, user_id: str) -> str:
 
 def cancel_job(job_id: str) -> bool:
     """Mark an active job as cancelled. Returns True if the job was found and cancellable."""
-    status = _load_status()
-    found = False
-    for job in status:
-        if job["id"] == job_id and job.get("status") in _ACTIVE_STATUSES:
-            job["status"] = "cancelled"
-            found = True
-            break
-    if found:
-        _save_status(status)
+    with _status_lock:
+        status = _load_status()
+        found = False
+        for job in status:
+            if job["id"] == job_id and job.get("status") in _ACTIVE_STATUSES:
+                job["status"] = "cancelled"
+                found = True
+                break
+        if found:
+            _save_status(status)
     return found
 
 
@@ -389,11 +435,12 @@ _CLEARABLE_STATUSES = {"done", "cancelled"}
 def clear_completed() -> None:
     """Remove done, cancelled, and errored jobs from the status file.
     This only affects the display queue — it never touches ChromaDB or the graph."""
-    status = _load_status()
-    _save_status(
-        [
-            j
-            for j in status
-            if j["status"] not in _CLEARABLE_STATUSES and not j["status"].startswith("error")
-        ]
-    )
+    with _status_lock:
+        status = _load_status()
+        _save_status(
+            [
+                j
+                for j in status
+                if j["status"] not in _CLEARABLE_STATUSES and not j["status"].startswith("error")
+            ]
+        )

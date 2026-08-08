@@ -283,7 +283,7 @@ interface SourcesPanelProps {
   fadingJobIds: Set<string>;
   hiddenJobIds: Set<string>;
   onToggleCollapse: () => void;
-  onDropFiles: (files: File[]) => void;
+  onDropFiles: (files: File[], describeImages: boolean) => void;
   onCancelJob: (jobId: string) => void;
   onClearCompleted: () => void;
   onIngestText: (text: string, sourceName: string) => Promise<void>;

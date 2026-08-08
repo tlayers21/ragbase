@@ -1,190 +1,124 @@
 # RAGbase Cleanup Skill
 
-Periodic code quality audit. Run after a large feature lands, before a release commit, or when the codebase feels cluttered. The goal is reduction — less code is better code.
+Quality pass with **no behavior change**. The goal is reduction — less code is better
+code. If a change alters what the app does, it isn't cleanup; stop and treat it as a
+feature or a bug fix.
+
+Run after a large feature lands, before a release commit, or when a module has grown
+past ~300 lines or a pattern has appeared in 2+ files.
 
 ---
 
-## When to Run
+## Files to match
 
-- After a large feature addition (new ingestor, new query mode, new UI panel)
-- Before a major commit or release tag
-- When you notice repeated patterns across 2+ files
-- When a module has grown past ~300 lines
+When you're unsure what "clean" looks like here, read these first — they are the house
+style at its best:
+
+| File | Why it's the reference |
+|---|---|
+| `ingestion/queue.py` | Section headers, small single-purpose functions, atomic writes, clear public/private split |
+| `utils/cache.py` | Tight module docstring, every failure path degrades instead of raising, comments only where a *why* exists |
+| `retrieval/search.py` | Pure helper functions (`_rrf`, `_rank_indices`, `_build_filter`) split out of the main flow |
+| `frontend/lib/api.ts` | One shared SSE parser instead of three; every call typed and centralized |
+| `frontend/hooks/useIngestion.ts` | Complex async state kept readable with named helpers (`hasActiveJobs`, `pollInterval`) |
 
 ---
 
-## What to Look For
+## RAGbase-specific patterns to watch for
 
-### Dead Code
+These are the duplications and drifts that actually recur in this codebase:
 
-**Python:**
+**Hardcoded model names.** Any string literal `"qwen3"` / `"qwen2.5:3b"` / `"bge-m3"`
+outside `config/models.py` is a bug.
 ```bash
-# Unused imports
-ruff check . --select F401
-
-# Find functions defined but never called (manual grep)
-grep -rn "^def " . --include="*.py" | grep -v test
+grep -rn '"qwen\|"bge-m3' --include="*.py" . | grep -v config/models.py
 ```
 
-Check each function — is it called anywhere? Is it part of a public interface that might be called externally? If neither, delete it.
-
-**TypeScript:**
+**Missing `model=` on a fast task.** `generate_stream()` defaults to qwen3, so a
+forgotten argument silently runs the slow thinking model. Audit every call site:
 ```bash
-# TypeScript compiler will flag unused locals if strict
-cd frontend && npx tsc --noEmit
+grep -rn "generate_stream(" --include="*.py" .
+```
+Only `ml/generate_eval.py` should legitimately omit `model=`.
+
+**Magic numbers outside `config/settings.py`.** Thresholds, timeouts, limits and batch
+sizes belong there with a comment saying why that value.
+
+**`fetch()` in a frontend component or hook.** All calls belong in `lib/api.ts`.
+```bash
+grep -rn "fetch(" frontend/components frontend/hooks
 ```
 
-Look for:
-- Imports that are listed but not used in the file
-- Props defined in an interface but never accessed in the component
-- `const foo = ...` where `foo` is never referenced
+**Duplicated SSE / streaming logic.** There is exactly one parser
+(`consumeQueryStream`) and one token framer (`_sse_token`). If a second appears,
+collapse it — and remember the two are a matched pair across the stack.
 
-**Commented-out code:**
-```python
-# result = old_reranker(chunks)   ← delete this
-# model = llava  ← delete this
+**Repeated ChromaDB filter construction.** `{"$and": [...]}` assembly should go through
+a helper (`search.py::_build_filter`), not be rebuilt inline.
+
+**Per-endpoint duplication in `api/`.** `/query/stream` and `/query/with_attachments`
+share the retrieve → rerank → build-context → stream shape. New endpoints should reuse
+`RAGPipeline.search_candidates()` / `rerank_candidates()` / `build_answer_prompt()`
+rather than re-implementing the sequence.
+
+**Ingestor subclasses doing more than `extract_text()`.** Chunking, storing,
+summarizing and graph enqueueing all live in `BaseIngestor`. If a subclass reimplements
+any of it, push it up.
+
+**`sqlite3.connect()` without `timeout=30`.**
+```bash
+grep -rn "sqlite3.connect(" --include="*.py" . | grep -v "timeout=30"
 ```
-Commented-out code is not documentation. If it was removed for a reason, trust the reason. If it might come back, use git — not inline comments.
+
+**Non-atomic JSON writes.** Persisted JSON must be temp-file + `os.replace()`.
 
 ---
 
-### Repetitive Logic
+## Generic checks
 
-Same pattern in 2+ places → extract to a shared function.
-
-**Python example — repeated Ollama call pattern:**
-```python
-# If you see this in multiple files:
-response = client.generate(model=get_model("text_cleanup"), prompt=prompt, system=system)
-return response.response.strip()
-
-# Extract to utils/ollama_client.py
-def generate_text(task: str, prompt: str, system: str | None = None) -> str:
-    response = client.generate(model=get_model(task), prompt=prompt, system=system)
-    return response.response.strip()
+**Dead code**
+```bash
+ruff check . --select F401                  # unused imports
+cd frontend && npx tsc --noEmit             # unused locals under strict
 ```
+Commented-out code is not documentation — delete it and trust git.
 
-**TypeScript example — repeated fetch pattern:**
-```tsx
-// If you see the same fetch + error handling in multiple hooks,
-// extract to lib/api.ts as a typed helper
-```
+**Over-complex logic** — functions past ~50 lines usually do two things; split at the
+natural seam (`pdf.py` does this well: `_is_handwritten` / `_extract_handwritten` /
+`_extract_typed` / `_describe_images`). Flatten nested `if` with early returns. Break up
+a one-liner that needs a comment to parse. Consider a dataclass past ~4 parameters.
 
-Similar API endpoint calls with the same shape: abstract into a shared function in `lib/api.ts`.
-
-Duplicate TypeScript type definitions: consolidate into a single `types.ts` or colocate with the hook that owns them.
+**Missing comments** — after reducing, add the *why* back where a magic number, a
+concurrency guard, or a library workaround is now bare. See `.ai/skills/commenting.md`.
 
 ---
 
-### Over-Complex Logic
+## Do not touch during cleanup
 
-**Functions over ~50 lines** — a strong signal that the function is doing two things. Split at natural seams:
+| Thing | Why |
+|---|---|
+| `data/`, `frontend/.next/`, `scripts/metrics.*` | Protected — see `master.md` |
+| `docs/CODEBASE_EXPLAINED.md` | Owner-curated; only rewrite when explicitly asked |
+| `QueryRewriter` in `retrieval/pipeline.py` | Looks dead — `forward()` never calls it — but `ml/eval.py` and `ml/collect_pairs.py` call `pipeline.rewriter` directly |
+| `utils/cache.py` | Live on both `/query` and `/query/stream`. The linear cosine scan looks inefficient but is correct at personal scale — don't "optimize" it into an index without a measured need. |
+| `config/paths.py::RERANKER_MODEL_PATH` | Never loaded, but `reset_all.sh` deliberately cleans that path |
+| `vision_diagram` / `query_rewrite` keys in `config/models.py` | Unreferenced task keys kept so routing can diverge later |
+| The response-shape branches in `utils/ollama_client.py` | They look redundant; they exist because ollama-python has changed its embedding response type across versions |
+| The 100ms delay in `useChat.sendMessage()` | Looks like a hack; prevents a real reader-teardown crash |
 
-```python
-# Before: one 80-line extract() that does detection + extraction + cleanup
-# After:
-def _detect_type(doc) -> str: ...         # ~10 lines
-def _extract_typed(doc) -> str: ...       # ~30 lines
-def _extract_handwritten(doc) -> str: ... # ~30 lines
-def extract(doc) -> str:                  # ~10 lines, dispatches
-    ...
-```
-
-**Deeply nested if/else** — flatten with early returns:
-
-```python
-# Before
-if condition_a:
-    if condition_b:
-        if condition_c:
-            do_thing()
-
-# After
-if not condition_a:
-    return
-if not condition_b:
-    return
-if not condition_c:
-    return
-do_thing()
-```
-
-**Too many parameters (4+)** — consider a dataclass or TypedDict:
-
-```python
-# Before
-def store_chunk(text, source, user_id, page_no, chunk_idx, embedding, metadata):
-
-# After
-@dataclass
-class ChunkData:
-    text: str
-    source: str
-    user_id: str
-    page_no: int
-    chunk_idx: int
-    embedding: list[float]
-    metadata: dict
-
-def store_chunk(chunk: ChunkData): ...
-```
-
-**Complex one-liners** — break them out if they require a comment to understand:
-
-```python
-# If you need a comment to explain a one-liner, the one-liner is too complex
-scores = [s for s, c in zip(raw_scores, chunks) if s >= threshold and c.strip()]
-
-# Clearer:
-filtered = [
-    (score, chunk)
-    for score, chunk in zip(raw_scores, chunks)
-    if score >= threshold and chunk.strip()
-]
-scores = [s for s, _ in filtered]
-```
+The pattern: **before deleting something that looks unused, grep for it across `ml/`,
+`scripts/` and the frontend.** Several things here are reachable only from outside the
+server process.
 
 ---
 
-### Missing Comments (add these)
-
-After a cleanup pass, check for:
-- Functions with non-obvious behavior and no docstring
-- Magic numbers with no explanation:
-  ```python
-  timeout=30      # needs: concurrent graph thread + queue worker both write here
-  threshold=0.7   # needs: cosine distance above this → source is off-topic
-  ```
-- Complex regex with no explanation of what it matches
-- Concurrency guards with no explanation of what race they prevent
-
-Read `.ai/skills/commenting.md` for comment style rules.
-
----
-
-## After Cleanup
-
-Always run in this order:
+## After cleanup
 
 ```bash
-# 1. Python lint + format
 source .venv/bin/activate && ruff format . && ruff check . --fix
-
-# 2. TypeScript type check
 cd frontend && npx tsc --noEmit && cd ..
-
-# 3. Smoke test — verify the app still starts
-bash scripts/start.sh
+npm --prefix frontend run build      # if you touched dynamic imports, PDF, or theming
 ```
 
-If the app fails to start after cleanup, the cleanup broke something. Investigate before committing.
-
----
-
-## What NOT to Touch During Cleanup
-
-- `data/` — protected, never edit
-- `docs/CODEBASE_EXPLAINED.md` — generated, never edit manually
-- `scripts/metrics.*` — protected
-- `frontend/.next/` — generated build artifacts
-- The `QueryRewriter` class in `retrieval/pipeline.py` — kept intentionally (ml/ scripts use it even though forward() doesn't call it)
+Then actually exercise the app — a clean type-check proves nothing about runtime.
+Use `.ai/skills/frontend-testing.md` to drive ingestion + a query end to end.

@@ -5,7 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { Copy, Check as CheckIcon, X, FileText } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, relevancePercent } from "@/lib/utils";
 import { CURRENT_MODEL } from "./ModelSelector";
 import type { CitedChunk, Message, MessageAttachment } from "@/types";
 
@@ -80,7 +80,7 @@ function ChunksModal({ chunks, onClose }: { chunks: CitedChunk[]; onClose: () =>
                   {chunk.source}
                 </span>
                 <span className="text-[10px] tabular-nums text-foreground-muted/60 flex-shrink-0">
-                  {(chunk.score * 100).toFixed(0)}% match
+                  {relevancePercent(chunk.score)}% match
                 </span>
               </div>
               <p
