@@ -95,12 +95,15 @@ export default function SettingsPage() {
               role="switch"
               aria-checked={telemetryEnabled}
               onClick={() => setTelemetryEnabled(!telemetryEnabled)}
-              className={`relative h-6 w-11 flex-shrink-0 rounded-full transition-colors ${
+              className={`relative h-6 w-11 flex-shrink-0 overflow-hidden rounded-full transition-colors ${
                 telemetryEnabled ? "bg-primary" : "bg-border"
               }`}
             >
+              {/* left-0 anchors the knob to the track. Without it the absolute
+                  span falls back to its static position — the button centers its
+                  content — so translate-x pushed the knob off the right edge. */}
               <span
-                className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                className={`absolute left-0 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
                   telemetryEnabled ? "translate-x-[22px]" : "translate-x-0.5"
                 }`}
               />
@@ -116,7 +119,7 @@ export default function SettingsPage() {
         <div className="rounded-xl border border-border bg-surface p-5">
           <p className="text-sm font-semibold text-foreground mb-1">Theme</p>
           <p className="text-xs text-foreground-muted mb-3">
-            Defaults to your system preference.
+            Defaults to your system preference on first load, then stays where you set it.
           </p>
           <ThemeToggle />
         </div>

@@ -8,10 +8,11 @@ import {
   deleteSource as apiDeleteSource,
   cancelIngestion,
   getSourceFileUrl,
-  fetchSourceText,
+  getStaticSourceFileUrl,
+  fetchTextFile,
   fetchSourceType,
 } from "@/lib/api";
-import { cn } from "@/lib/utils";
+import { cn, sourceTypeFromExt } from "@/lib/utils";
 import type { SourceSummary } from "@/types";
 
 // Lazy-load react-pdf to keep the main bundle light (PDF.js is large)
@@ -21,6 +22,39 @@ const PDFThumbnailView = dynamic(() => import("@/components/sources/PDFThumbnail
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 type SourceType = "pdf" | "image" | "text";
+
+/**
+ * Where to load a source's stored file from.
+ *
+ * Prefers the same-origin Next.js static mount so previews and PDF rendering
+ * never touch the FastAPI server — it has queries to answer, and these are whole
+ * multi-hundred-MB files. Falls back to `/sources/{source}/file` when the
+ * extension is unknown (no stored original) or the user id can't be read.
+ */
+function useSourceFileUrl(source: SourceSummary): string | null {
+  const [url, setUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getStaticSourceFileUrl(source.source, source.file_ext).then((staticUrl) => {
+      if (!cancelled) setUrl(staticUrl ?? getSourceFileUrl(source.source));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [source.source, source.file_ext]);
+
+  return url;
+}
+
+/** Type from the extension when we have it; otherwise HEAD the API as before. */
+async function resolveSourceType(
+  source: SourceSummary,
+  signal: AbortSignal
+): Promise<SourceType> {
+  if (source.file_ext) return sourceTypeFromExt(source.file_ext);
+  return fetchSourceType(source.source, signal);
+}
 
 // ── Thumbnail ─────────────────────────────────────────────────────────────────
 
@@ -32,18 +66,18 @@ type ThumbnailState =
   | { status: "text"; content: string }
   | { status: "none" };
 
-function SourceThumbnail({ source }: { source: string }) {
+function SourceThumbnail({ source }: { source: SourceSummary }) {
   const [state, setState] = useState<ThumbnailState>({ status: "idle" });
   const containerRef = useRef<HTMLDivElement>(null);
-  const fileUrl = getSourceFileUrl(source);
+  const fileUrl = useSourceFileUrl(source);
 
   useEffect(() => {
     const el = containerRef.current;
-    if (!el) return;
+    if (!el || !fileUrl) return;
 
     // Aborted on unmount. The card grid unmounts the instant a preview opens, and
-    // a HEAD left in flight then fails as net::ERR_FAILED — which Chrome surfaces
-    // as a misleading CORS error and which raced the preview's own request.
+    // a request left in flight then fails as net::ERR_FAILED — which Chrome
+    // surfaces as a misleading CORS error and which raced the preview's own request.
     const controller = new AbortController();
 
     const observer = new IntersectionObserver(
@@ -52,13 +86,13 @@ function SourceThumbnail({ source }: { source: string }) {
         observer.disconnect();
         setState({ status: "loading" });
 
-        fetchSourceType(source, controller.signal)
+        resolveSourceType(source, controller.signal)
           .then(async (type) => {
             if (type !== "text") {
               setState({ status: type });
               return;
             }
-            const text = await fetchSourceText(source, controller.signal);
+            const text = await fetchTextFile(fileUrl, controller.signal);
             setState({ status: "text", content: text.slice(0, 300) });
           })
           .catch((err: Error) => {
@@ -82,14 +116,16 @@ function SourceThumbnail({ source }: { source: string }) {
       {(state.status === "idle" || state.status === "loading") && (
         <div className="h-3 w-3 rounded-full bg-border animate-pulse" />
       )}
-      {state.status === "pdf" && (
+      {state.status === "pdf" && fileUrl && (
         <div className="w-full h-full flex items-center justify-center overflow-hidden">
           <PDFThumbnailView url={fileUrl} />
         </div>
       )}
-      {state.status === "image" && (
-        // crossOrigin makes this a CORS request like the fetch() above, so both
-        // share one cache entry — see the Vary: Origin note in api/sources.py.
+      {state.status === "image" && fileUrl && (
+        // crossOrigin makes this a CORS request like any fetch() of the same URL,
+        // so both share one cache entry — see the Vary: Origin note in
+        // api/sources.py. Harmless on the same-origin static URL, and still
+        // required on the FastAPI fallback.
         // eslint-disable-next-line @next/next/no-img-element
         <img src={fileUrl} alt="" crossOrigin="anonymous" className="w-full h-full object-cover" />
       )}
@@ -120,9 +156,10 @@ function PreviewPane({ source, onClose }: PreviewPaneProps) {
   const [textContent, setTextContent] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const fileUrl = getSourceFileUrl(source.source);
+  const fileUrl = useSourceFileUrl(source);
 
   useEffect(() => {
+    if (!fileUrl) return;
     setIsLoading(true);
     setError(null);
     setType(null);
@@ -132,11 +169,11 @@ function PreviewPane({ source, onClose }: PreviewPaneProps) {
     // paint "Preview unavailable" over a preview that actually loaded fine.
     const controller = new AbortController();
 
-    fetchSourceType(source.source, controller.signal)
+    resolveSourceType(source, controller.signal)
       .then(async (detectedType) => {
         setType(detectedType);
         if (detectedType === "text") {
-          setTextContent(await fetchSourceText(source.source, controller.signal));
+          setTextContent(await fetchTextFile(fileUrl, controller.signal));
         }
         setIsLoading(false);
       })
@@ -147,7 +184,7 @@ function PreviewPane({ source, onClose }: PreviewPaneProps) {
       });
 
     return () => controller.abort();
-  }, [source.source, fileUrl]);
+  }, [source, fileUrl]);
 
   return (
     <div className="flex flex-col h-full">
@@ -185,11 +222,11 @@ function PreviewPane({ source, onClose }: PreviewPaneProps) {
           </div>
         )}
 
-        {!isLoading && !error && type === "pdf" && (
+        {!isLoading && !error && type === "pdf" && fileUrl && (
           <PDFPreview url={fileUrl} />
         )}
 
-        {!isLoading && !error && type === "image" && (
+        {!isLoading && !error && type === "image" && fileUrl && (
           <div className="flex items-center justify-center p-4">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
@@ -281,7 +318,7 @@ function SourceCard({
         </p>
       )}
 
-      {!isConfirming && <SourceThumbnail source={source.source} />}
+      {!isConfirming && <SourceThumbnail source={source} />}
 
       <div className="min-w-0">
         <p className="text-xs font-medium text-foreground truncate" title={source.source}>

@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from config.logging import setup_logging
 from config.models import get_model
-from config.runtime import USER_ID
+from config.runtime import USER_ID, query_finished, query_started
 from config.settings import (
     ANSWER_THINKING_ENABLED,
     ATTACHMENT_TEXT_MAX_CHARS,
@@ -80,6 +80,28 @@ def _sse_token(token: str) -> str:
     token always starts with a quote.
     """
     return f"data: {json.dumps(token)}\n\n"
+
+
+async def _with_query_priority(
+    stream: AsyncGenerator[str, None],
+) -> AsyncGenerator[str, None]:
+    """
+    Flag the process as serving a query for as long as `stream` is producing.
+
+    The knowledge-graph worker polls this flag between entity extractions and
+    pauses while it is set, so a build in progress stops competing with the query
+    the user is actually waiting on (see retrieval/graph.py::_yield_to_queries).
+
+    Wrapping the generator rather than setting the flag in the endpoint is what
+    makes the clear reliable: the ``finally`` runs when the stream completes, when
+    it raises, and when the client disconnects and Starlette closes the generator.
+    """
+    query_started()
+    try:
+        async for frame in stream:
+            yield frame
+    finally:
+        query_finished()
 
 
 class QueryRequest(BaseModel):
@@ -254,7 +276,7 @@ async def query_stream(req: QueryRequest, request: Request) -> StreamingResponse
             },
         )
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(_with_query_priority(event_stream()), media_type="text/event-stream")
 
 
 @router.post("/direct")
@@ -484,4 +506,4 @@ async def query_with_attachments(
                 except OSError:
                     pass
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(_with_query_priority(event_stream()), media_type="text/event-stream")

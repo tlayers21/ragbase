@@ -1,4 +1,6 @@
+import asyncio
 import mimetypes
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response
@@ -27,19 +29,35 @@ _KNOWN_MIME: dict[str, str] = {
 }
 
 
-@router.api_route("/{source}/file", methods=["GET", "HEAD"])
-async def get_source_file(source: str, request: Request):
-    """Serve the stored original file for a source. HEAD is supported for content-type sniffing."""
+def _locate_source_file(source: str) -> tuple[Path, int] | None:
+    """Find the stored file for a source and its size, or None if there isn't one.
+
+    Runs off the event loop: exists()/glob()/stat() are three separate synchronous
+    filesystem round-trips, and SOURCES_DIR holds every original the user has ever
+    ingested, so the glob is not free once that directory is large.
+    """
     source_dir = SOURCES_DIR / USER_ID
     if not source_dir.exists():
-        raise HTTPException(status_code=404, detail="No stored source files")
-
-    # Find the file matching this source name (any extension)
-    matches = list(source_dir.glob(f"{source}.*"))
+        return None
+    matches = sorted(source_dir.glob(f"{source}.*"))
     if not matches:
+        return None
+    return matches[0], matches[0].stat().st_size
+
+
+@router.api_route("/{source}/file", methods=["GET", "HEAD"])
+async def get_source_file(source: str, request: Request):
+    """Serve the stored original file for a source. HEAD is supported for content-type sniffing.
+
+    The frontend prefers the Next.js static route (/static/sources/...) for
+    previews and PDF rendering; this endpoint stays as the fallback for clients
+    that can't reach the static mount and as the authority on content type.
+    """
+    located = await asyncio.to_thread(_locate_source_file, source)
+    if located is None:
         raise HTTPException(status_code=404, detail=f"No file stored for source '{source}'")
 
-    path = matches[0]
+    path, size = located
     suffix = path.suffix.lower()
     media_type = (
         _KNOWN_MIME.get(suffix) or mimetypes.guess_type(str(path))[0] or "application/octet-stream"
@@ -58,7 +76,7 @@ async def get_source_file(source: str, request: Request):
             headers={
                 **headers,
                 "Content-Type": media_type,
-                "Content-Length": str(path.stat().st_size),
+                "Content-Length": str(size),
             }
         )
 

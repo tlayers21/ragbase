@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from analysis.contradiction import find_contradictions
 from analysis.fact_check import check_source_facts
 from config.logging import setup_logging
+from config.paths import SOURCES_DIR
 from config.runtime import USER_ID
 from ingestion.helpers import delete_source
 from utils.chromadb_client import get_collection
@@ -19,6 +20,10 @@ class SourceSummary(BaseModel):
     chunk_count: int
     flagged_count: int
     contradiction_count: int
+    # Extension of the stored original (".pdf", ".png", …), or "" if the file is
+    # gone. The frontend needs it to build the static /static/sources/... URL,
+    # since the source name is a slug with no extension of its own.
+    file_ext: str = ""
 
 
 class ChunkDetail(BaseModel):
@@ -31,11 +36,25 @@ class ChunkDetail(BaseModel):
     contradicts_source: str
 
 
+def _stored_extensions() -> dict[str, str]:
+    """Map source name → stored file extension, from one listing of SOURCES_DIR.
+
+    Scanned once per request instead of stat-ing per source: the frontend uses
+    this to address files on the Next.js static mount, so getting it here removes
+    a per-source HEAD against this server for every card in the sources modal.
+    """
+    source_dir = SOURCES_DIR / USER_ID
+    if not source_dir.exists():
+        return {}
+    return {path.stem: path.suffix for path in source_dir.iterdir() if path.is_file()}
+
+
 @router.get("/", response_model=list[SourceSummary])
 async def list_documents():
     """List all sources with summary info."""
     collection = get_collection(USER_ID)
     results = await asyncio.to_thread(lambda: collection.get(include=["metadatas"]))
+    extensions = await asyncio.to_thread(_stored_extensions)
 
     # results["metadatas"] can be None when the collection is empty in some
     # ChromaDB versions. Guard against that and skip any malformed entries.
@@ -58,6 +77,7 @@ async def list_documents():
                 chunk_count=len(chunks),
                 flagged_count=sum(1 for c in chunks if c.get("flagged")),
                 contradiction_count=sum(1 for c in chunks if c.get("contradiction")),
+                file_ext=extensions.get(source, ""),
             )
         )
 
@@ -107,7 +127,9 @@ async def delete_document(source: str):
 @router.post("/{source}/check_facts")
 async def check_facts(source: str):
     """Run the factual accuracy checker on a source."""
-    results = check_source_facts(source, USER_ID)
+    # One LLM call per chunk — minutes on a large source, and it would block the
+    # event loop for all of it (no query could even start streaming).
+    results = await asyncio.to_thread(check_source_facts, source, USER_ID)
     flagged = sum(1 for r in results if r["flagged"])
     return {"status": "ok", "flagged": flagged, "total": len(results)}
 
@@ -115,5 +137,6 @@ async def check_facts(source: str):
 @router.post("/{source}/check_contradictions")
 async def check_contradictions(source: str):
     """Run contradiction detection on a source against other sources."""
-    count = find_contradictions(source, USER_ID)
+    # Same reasoning as check_facts: LLM calls plus ChromaDB reads, all synchronous.
+    count = await asyncio.to_thread(find_contradictions, source, USER_ID)
     return {"status": "ok", "contradictions_found": count}

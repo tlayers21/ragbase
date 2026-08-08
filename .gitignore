@@ -19,16 +19,12 @@ data/cache.db*
 data/user_id.txt
 data/device_id.txt
 data/settings.json
-# Created by reset_all.sh, consumed and deleted by GET /sessions/should_reset —
-# a runtime signal, not source. Was tracked, which left the repo showing a
-# deletion after every reset; run `git rm --cached data/reset_sessions_flag` once
-# to finish untracking it.
 data/reset_sessions_flag
 data/history.json
 history.json
 eval_set.json
 app.py
-# Models (large binary files, not committed)
+# Models
 models/reranker_model.pt
 models/finetuned_embeddings/
 # Ingestion progress files
@@ -43,3 +39,9 @@ frontend/public/pdf.worker.min.mjs
 ragbase.egg-info/
 .frontend_build_hash
 scripts/metrics.ipynb
+# Agent / editor configuration
+.ai/
+.claude/
+.vscode/
+.github/
+docs/CODEBASE_EXPLAINED.md

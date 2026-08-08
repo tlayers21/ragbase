@@ -48,8 +48,12 @@ async def ingest_file(
     """
     file_bytes = await file.read()
     suffix = Path(file.filename or "").suffix.lower() or ".bin"
-    _save_source_file(source, suffix, file_bytes)
-    job_id = enqueue(
+    # Uploads run to hundreds of MB (a 381MB PDF is in the test corpus), so both
+    # the copy kept in data/sources and the queue's own temp copy are written off
+    # the event loop rather than stalling every other request behind the disk.
+    await asyncio.to_thread(_save_source_file, source, suffix, file_bytes)
+    job_id = await asyncio.to_thread(
+        enqueue,
         file_bytes=file_bytes,
         filename=file.filename,
         source=source,
@@ -104,8 +108,8 @@ async def ingest_text(
     source: str = Form(...),
 ):
     """Ingest raw pasted text. Returns a job ID immediately."""
-    _save_source_file(source, ".txt", text.encode())
-    job_id = enqueue_text(text=text, source=source, user_id=USER_ID)
+    await asyncio.to_thread(_save_source_file, source, ".txt", text.encode())
+    job_id = await asyncio.to_thread(enqueue_text, text=text, source=source, user_id=USER_ID)
     return {"job_id": job_id, "status": "queued"}
 
 
@@ -133,20 +137,23 @@ async def generate_title(text: str = Form(...)):
 @router.get("/status")
 async def queue_status():
     """Get current status of all ingestion jobs."""
-    return {"jobs": get_status()}
+    # The frontend polls this every 1-3s while anything is active, and it reads a
+    # JSON file guarded by _status_lock — which both queue workers also hold. On
+    # the event loop, one contended read stalls every in-flight request.
+    return {"jobs": await asyncio.to_thread(get_status)}
 
 
 @router.post("/clear_completed")
 async def clear_done():
     """Remove completed jobs from the status list."""
-    clear_completed()
+    await asyncio.to_thread(clear_completed)
     return {"status": "ok"}
 
 
 @router.post("/cancel/{job_id}")
 async def cancel_ingestion(job_id: str):
     """Cancel an active ingestion job (queued, ingesting, ingested, or building_graph)."""
-    cancelled = cancel_job(job_id)
+    cancelled = await asyncio.to_thread(cancel_job, job_id)
     if not cancelled:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found or not cancellable")
     return {"status": "ok", "job_id": job_id, "job_status": "cancelled"}

@@ -3,12 +3,16 @@
 USER_ID and DEVICE_ID are generated on first launch and persisted to
 data/user_id.txt and data/device_id.txt. Mutable settings (telemetry opt-out,
 display name) live in data/settings.json and override config/settings.py defaults.
+
+Also holds QUERY_IN_PROGRESS, the process-wide signal that a user is waiting on a
+query right now — see the "Query priority" section below.
 """
 
 import json
 import os
 import secrets
 import tempfile
+import threading
 from pathlib import Path
 
 from config.logging import setup_logging
@@ -76,6 +80,45 @@ def set_telemetry_enabled(enabled: bool) -> None:
     _settings["telemetry_enabled"] = enabled
     _save_settings()
     logger.info(f"Telemetry {'enabled' if enabled else 'disabled'}")
+
+
+# -- Query priority ----------------------------------------------------------
+# Everything in RAGbase shares one machine and one Ollama process, so a graph
+# build (an LLM call per chunk, running for minutes) directly slows down any
+# query the user runs while it is in flight. This flag lets the graph worker see
+# that someone is actually waiting and back off between entity extractions
+# instead of the query and the build fighting for the same CPU.
+#
+# It is a hint, not a lock: the build is only asked to pause briefly, never
+# stopped, so a long build still makes progress while queries come and go.
+#
+# QUERY_IN_PROGRESS is the readable module-level flag; _active_queries is what
+# actually maintains it, because concurrent queries would otherwise have the
+# first one to finish clear the flag out from under the others.
+QUERY_IN_PROGRESS = False
+_active_queries = 0
+_query_lock = threading.Lock()
+
+
+def query_started() -> None:
+    """Mark that a query is being served. Always pair with query_finished()."""
+    global QUERY_IN_PROGRESS, _active_queries
+    with _query_lock:
+        _active_queries += 1
+        QUERY_IN_PROGRESS = True
+
+
+def query_finished() -> None:
+    """Mark one query as complete (or failed). Clears the flag once none remain."""
+    global QUERY_IN_PROGRESS, _active_queries
+    with _query_lock:
+        _active_queries = max(0, _active_queries - 1)
+        QUERY_IN_PROGRESS = _active_queries > 0
+
+
+def is_query_in_progress() -> bool:
+    """Whether any query is currently being served."""
+    return QUERY_IN_PROGRESS
 
 
 def get_display_name() -> str | None:

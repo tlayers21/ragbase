@@ -1,6 +1,7 @@
 import json
 import re
 import sqlite3
+import time
 
 import networkx as nx
 from json_repair import repair_json
@@ -8,6 +9,8 @@ from json_repair import repair_json
 from config.logging import setup_logging
 from config.models import get_model
 from config.paths import KNOWLEDGE_GRAPH_DB_PATH
+from config.runtime import is_query_in_progress
+from config.settings import GRAPH_YIELD_MAX_SECONDS, GRAPH_YIELD_SLEEP_SECONDS
 from utils.ollama_client import generate_stream
 
 logger = setup_logging(__name__)
@@ -216,6 +219,36 @@ Only include clear factual entities and relationships. Output JSON only, no expl
 
 
 # -- Graph building --------------------------------------------------------
+def _yield_to_queries(source: str) -> None:
+    """
+    Pause the graph build while a query is being served.
+
+    Entity extraction is one qwen2.5:3b call per chunk against the same Ollama
+    process a query needs, so a build running through a large document visibly
+    slows every query the user makes in the meantime. Sleeping between chunks
+    hands the CPU (and Ollama's queue) to the request someone is actually waiting
+    on, at the cost of a build that finishes a little later — the graph is a
+    recall improvement, not something the UI blocks on.
+
+    Capped at GRAPH_YIELD_MAX_SECONDS so a flag left set by a crashed request
+    degrades into a slower build rather than one that never finishes.
+    """
+    if not is_query_in_progress():
+        return
+
+    waited = 0.0
+    while is_query_in_progress() and waited < GRAPH_YIELD_MAX_SECONDS:
+        time.sleep(GRAPH_YIELD_SLEEP_SECONDS)
+        waited += GRAPH_YIELD_SLEEP_SECONDS
+
+    if waited >= GRAPH_YIELD_MAX_SECONDS:
+        logger.warning(
+            f"Graph build for '{source}' waited {waited:.1f}s on an active query — resuming anyway"
+        )
+    else:
+        logger.debug(f"Graph build for '{source}' yielded {waited:.1f}s to an active query")
+
+
 def build_from_chunks(chunks: list[str], source: str, user_id: str) -> None:
     """
     Extract entities and relationships from all chunks of a source
@@ -230,6 +263,7 @@ def build_from_chunks(chunks: list[str], source: str, user_id: str) -> None:
 
     try:
         for chunk in chunks:
+            _yield_to_queries(source)
             extracted = extract_entities(chunk, source)
 
             for entity in extracted.get("entities", []):

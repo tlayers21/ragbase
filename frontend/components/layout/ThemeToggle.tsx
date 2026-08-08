@@ -2,12 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { useTheme } from "next-themes";
-import { Sun, Moon, Monitor } from "lucide-react";
+import { Sun, Moon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+// Light and Dark only. The OS preference is consulted once, on first load, by
+// ThemeInitializer in components/providers.tsx — after that the theme is always
+// an explicit user choice, so there is nothing for a "System" button to select.
 const options = [
   { value: "light", icon: Sun, label: "Light" },
-  { value: "system", icon: Monitor, label: "System" },
   { value: "dark", icon: Moon, label: "Dark" },
 ] as const;
 

@@ -5,6 +5,10 @@ export interface SourceSummary {
   chunk_count: number;
   flagged_count: number;
   contradiction_count: number;
+  /** Extension of the stored original (".pdf", ".png", …), "" if no file is stored.
+   * Needed to address the file on the Next.js static mount — the source name is a
+   * slug and carries no extension. */
+  file_ext: string;
 }
 
 export interface IngestionJob {

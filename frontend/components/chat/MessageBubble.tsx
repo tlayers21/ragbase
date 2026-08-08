@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { Copy, Check as CheckIcon, X, FileText } from "lucide-react";
-import { cn, relevancePercent } from "@/lib/utils";
+import { cn, humanizeSourceName, relevancePercent } from "@/lib/utils";
 import { CURRENT_MODEL } from "./ModelSelector";
 import type { CitedChunk, Message, MessageAttachment } from "@/types";
 
@@ -49,7 +49,33 @@ const STAGE_LABELS: Record<string, string> = {
   stopped: "Stopped.",
 };
 
-function ChunksModal({ chunks, onClose }: { chunks: CitedChunk[]; onClose: () => void }) {
+/** One source's contribution to an answer: its chunks, best score first. */
+interface SourceGroup {
+  source: string;
+  label: string;
+  chunks: CitedChunk[];
+}
+
+// Retrieval returns up to MAX_FINAL_RESULTS chunks and several of them routinely
+// come from the same document, so a chip per chunk would repeat the same name
+// three times. Group by source, order sources by their best-scoring chunk, and
+// order each source's chunks the same way.
+function groupChunksBySource(chunks: CitedChunk[]): SourceGroup[] {
+  const bySource = new Map<string, CitedChunk[]>();
+  for (const chunk of chunks) {
+    const existing = bySource.get(chunk.source);
+    if (existing) existing.push(chunk);
+    else bySource.set(chunk.source, [chunk]);
+  }
+
+  return Array.from(bySource, ([source, sourceChunks]) => ({
+    source,
+    label: humanizeSourceName(source),
+    chunks: [...sourceChunks].sort((a, b) => b.score - a.score),
+  })).sort((a, b) => b.chunks[0].score - a.chunks[0].score);
+}
+
+function ChunksModal({ group, onClose }: { group: SourceGroup; onClose: () => void }) {
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
@@ -61,23 +87,28 @@ function ChunksModal({ chunks, onClose }: { chunks: CitedChunk[]; onClose: () =>
         style={{ maxHeight: "80vh" }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex-shrink-0 flex items-center justify-between px-4 py-3 border-b border-border">
-          <span className="text-sm font-medium text-foreground">
-            Sources used ({chunks.length})
-          </span>
+        <div className="flex-shrink-0 flex items-center justify-between gap-2 px-4 py-3 border-b border-border">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-foreground truncate" title={group.source}>
+              {group.label}
+            </p>
+            <p className="text-[11px] text-foreground-muted">
+              {group.chunks.length} chunk{group.chunks.length !== 1 ? "s" : ""} used
+            </p>
+          </div>
           <button
             onClick={onClose}
-            className="rounded p-0.5 text-foreground-muted hover:text-foreground transition-colors"
+            className="flex-shrink-0 rounded p-0.5 text-foreground-muted hover:text-foreground transition-colors"
           >
             <X className="h-4 w-4" />
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-3">
-          {chunks.map((chunk, i) => (
+          {group.chunks.map((chunk, i) => (
             <div key={i} className="rounded-lg border border-border bg-surface p-3 space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-medium text-foreground truncate">
-                  {chunk.source}
+                  Chunk {i + 1}
                 </span>
                 <span className="text-[10px] tabular-nums text-foreground-muted/60 flex-shrink-0">
                   {relevancePercent(chunk.score)}% match
@@ -166,7 +197,10 @@ interface MessageBubbleProps {
 export function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const [isHovered, setIsHovered] = useState(false);
-  const [showChunksModal, setShowChunksModal] = useState(false);
+  const [openSource, setOpenSource] = useState<string | null>(null);
+  // Must run before the early returns below — hooks can't be conditional.
+  const sourceGroups = useMemo(() => groupChunksBySource(message.chunks ?? []), [message.chunks]);
+  const openGroup = sourceGroups.find((g) => g.source === openSource) ?? null;
 
   if (message.role === "system" && message.type === "summary") {
     return <SummaryBlock message={message} />;
@@ -253,19 +287,24 @@ export function MessageBubble({ message }: MessageBubbleProps) {
                 <CopyButton text={message.content} />
               </div>
             </div>
-            {message.isComplete && message.chunks && message.chunks.length > 0 && (
-              <div className="mt-3">
-                <button
-                  onClick={() => setShowChunksModal(true)}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-2.5 py-0.5 text-[11px] text-foreground-muted hover:border-foreground-muted/40 hover:text-foreground transition-colors"
-                >
-                  Sources used ({message.chunks.length})
-                </button>
-                {showChunksModal && (
-                  <ChunksModal
-                    chunks={message.chunks}
-                    onClose={() => setShowChunksModal(false)}
-                  />
+            {message.isComplete && sourceGroups.length > 0 && (
+              <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] text-foreground-muted/60 mr-0.5">Sources used</span>
+                {sourceGroups.map((group) => (
+                  <button
+                    key={group.source}
+                    onClick={() => setOpenSource(group.source)}
+                    title={`${group.source} — ${group.chunks.length} chunk${group.chunks.length !== 1 ? "s" : ""}`}
+                    className="inline-flex max-w-[220px] items-center gap-1.5 rounded-full border border-border bg-surface px-2.5 py-0.5 text-[11px] text-foreground-muted hover:border-foreground-muted/40 hover:text-foreground transition-colors"
+                  >
+                    <span className="truncate">{group.label}</span>
+                    <span className="tabular-nums text-foreground-muted/60">
+                      {group.chunks.length}
+                    </span>
+                  </button>
+                ))}
+                {openGroup && (
+                  <ChunksModal group={openGroup} onClose={() => setOpenSource(null)} />
                 )}
               </div>
             )}

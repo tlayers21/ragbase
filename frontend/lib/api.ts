@@ -52,10 +52,41 @@ export function getSourceFileUrl(source: string): string {
   return `${getBaseUrl()}/sources/${encodeURIComponent(source)}/file`;
 }
 
-export async function fetchSourceText(source: string, signal?: AbortSignal): Promise<string> {
-  const res = await fetch(getSourceFileUrl(source), { signal });
-  if (!res.ok) throw new Error(`fetchSourceText: ${res.status}`);
+/**
+ * Same-origin URL for a stored source file, served straight off the Next.js
+ * static mount (frontend/public/static/sources → data/sources).
+ *
+ * Previews and PDF rendering pull whole files — a 113MB PDF is in the test
+ * corpus — and routing those through FastAPI put them behind the same server
+ * that has to answer queries. Static serving takes the Python process out of the
+ * path entirely, and being same-origin it also sidesteps the CORS-cache trap
+ * that `/sources/{source}/file` needs `Vary: Origin` to survive.
+ *
+ * Returns null when the extension is unknown (no stored file), so callers fall
+ * back to getSourceFileUrl().
+ */
+export async function getStaticSourceFileUrl(
+  source: string,
+  fileExt: string
+): Promise<string | null> {
+  if (!fileExt) return null;
+  try {
+    // Cached after the first call — this does not re-hit the backend per source.
+    const { user_id } = await fetchUserSettings();
+    return `/static/sources/${encodeURIComponent(user_id)}/${encodeURIComponent(source)}${fileExt}`;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchTextFile(url: string, signal?: AbortSignal): Promise<string> {
+  const res = await fetch(url, { signal });
+  if (!res.ok) throw new Error(`fetchTextFile: ${res.status}`);
   return res.text();
+}
+
+export async function fetchSourceText(source: string, signal?: AbortSignal): Promise<string> {
+  return fetchTextFile(getSourceFileUrl(source), signal);
 }
 
 // HEADs the stored source file to sniff its Content-Type. The backend serves the

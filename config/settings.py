@@ -25,6 +25,15 @@ RRF_K = 60
 # putting "/no_think" in the prompt is ignored (see §8 of .ai/instructions.md).
 ANSWER_THINKING_ENABLED = False
 
+# -- Graph build / query contention --------------------------------------------
+# A graph build is one LLM call per chunk against the same local Ollama process a
+# query needs, so between extractions the build pauses while a query is in flight
+# (config/runtime.py::QUERY_IN_PROGRESS). GRAPH_YIELD_SLEEP_SECONDS is one pause;
+# GRAPH_YIELD_MAX_SECONDS caps the total wait per chunk so a leaked flag can
+# never stall a build indefinitely.
+GRAPH_YIELD_SLEEP_SECONDS = 0.1
+GRAPH_YIELD_MAX_SECONDS = 60.0
+
 # -- Ingestion -----------------------------------------------------------------
 VISION_TIMEOUT_SECONDS = 180
 OLLAMA_VISION_NUM_CTX = 8192
