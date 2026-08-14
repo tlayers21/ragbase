@@ -33,11 +33,11 @@ class PdfIngestor(BaseIngestor):
     """
     Ingestor for PDF files. Routes each file to one of three paths:
 
-    - **Typed PDFs → anydoc.** Pure-Rust Markdown conversion, seconds rather than
+    - **Typed PDFs -> anydoc.** Pure-Rust Markdown conversion, seconds rather than
       minutes, and the output is already clean GFM so it needs no LLM cleanup pass.
-    - **Scanned/handwritten PDFs → Qwen2.5-VL.** Pages are rendered to images and
+    - **Scanned/handwritten PDFs -> Qwen2.5-VL.** Pages are rendered to images and
       transcribed one at a time, with page-level resume.
-    - **Anything anydoc can't handle → Docling.** The original pipeline, kept as a
+    - **Anything anydoc can't handle -> Docling.** The original pipeline, kept as a
       fallback for oversized files and unexpected conversion failures.
 
     `describe_images` is opt-in per file (the "Describe diagrams" checkbox in the

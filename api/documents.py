@@ -37,7 +37,7 @@ class ChunkDetail(BaseModel):
 
 
 def _stored_extensions() -> dict[str, str]:
-    """Map source name → stored file extension, from one listing of SOURCES_DIR.
+    """Map source name -> stored file extension, from one listing of SOURCES_DIR.
 
     Scanned once per request instead of stat-ing per source: the frontend uses
     this to address files on the Next.js static mount, so getting it here removes

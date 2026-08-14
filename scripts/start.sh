@@ -22,7 +22,7 @@ LATEST=$(.venv/bin/python3 -c "import urllib.request,json; data=json.loads(urlli
 LOCAL=$(git rev-parse --short HEAD)
 
 if [ -n "$LATEST" ] && [ "$LATEST" != "$LOCAL" ]; then
-    echo "Update available ($LOCAL → $LATEST), pulling..."
+    echo "Update available ($LOCAL -> $LATEST), pulling..."
     git pull origin main
     uv pip install -e . --python .venv/bin/python3 --quiet 2>/dev/null || true
     (cd frontend && npm install --silent)

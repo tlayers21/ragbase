@@ -63,7 +63,7 @@ export interface Message {
   mode?: QueryMode;
   /** Retrieval stage while streaming ("retrieving_sources" | "reranking" | "generating"). */
   stage?: string;
-  /** Generation latency in ms (first token → [DONE]). */
+  /** Generation latency in ms (first token -> [DONE]). */
   latencyMs?: number;
   /** True once onDone fires — guards sources section from rendering during streaming. */
   isComplete?: boolean;

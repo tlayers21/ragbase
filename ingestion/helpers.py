@@ -5,6 +5,7 @@ import torch
 import whisper
 
 from config.logging import setup_logging
+from config.paths import SOURCES_DIR
 from config.settings import VISION_TIMEOUT_SECONDS
 from retrieval.graph import delete_source as delete_graph_source
 from utils.cache import clear_cache
@@ -96,10 +97,15 @@ def describe_image(image_path: str | Path, source_name: str) -> str:
     )
 
 
-def delete_source(source: str, user_id: str) -> int:
+def delete_source(source: str, user_id: str, remove_file: bool = True) -> int:
     """
     Delete all chunks, summary, and graph data for a source.
     Returns the number of chunks deleted.
+
+    `remove_file` also discards the stored original in `data/sources/`. Pass False
+    from the re-ingestion cleanup path in `BaseIngestor.ingest`: the API writes the
+    new upload to that exact path *before* enqueueing the job, so wiping the old
+    source's file there would delete the file the running ingestion just stored.
     """
     collection = get_collection(user_id)
     summary_collection = get_summary_collection(user_id)
@@ -118,5 +124,32 @@ def delete_source(source: str, user_id: str) -> int:
 
     delete_graph_source(source, user_id)
     clear_cache(user_id)
+    if remove_file:
+        _delete_source_file(source, user_id)
 
     return deleted_count
+
+
+def _delete_source_file(source: str, user_id: str) -> None:
+    """
+    Remove the stored original for a source, if one was kept.
+
+    Deleting only the chunks left the uploaded file behind forever: the source
+    vanished from every list in the UI while its PDF/image stayed on disk, so
+    `data/sources/` grew without bound and nothing in the app could reach the file
+    to clean it up. Matches `{source}.*` because the source name is a slug that
+    carries no extension of its own.
+
+    Best-effort by design — a source with no stored original (YouTube, whose
+    transcript is never written to disk) is the normal case, and a failure here
+    must not turn a successful delete into an error.
+    """
+    source_dir = SOURCES_DIR / user_id
+    if not source_dir.exists():
+        return
+    for path in source_dir.glob(f"{source}.*"):
+        try:
+            path.unlink()
+            logger.info(f"Deleted stored file for '{source}': {path.name}")
+        except OSError as e:
+            logger.warning(f"Could not delete stored file {path}: {e}")

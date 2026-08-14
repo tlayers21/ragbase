@@ -114,7 +114,7 @@ def rerank(
     result_metas = [m for _, _, m in top]
 
     logger.debug(
-        f"Reranked {len(docs)} chunks → top {len(top)}, "
+        f"Reranked {len(docs)} chunks -> top {len(top)}, "
         f"score range [{min(scores):.2f}, {max(scores):.2f}]"
     )
     return result_docs, result_metas, result_scores

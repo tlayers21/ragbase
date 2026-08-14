@@ -54,7 +54,7 @@ export function getSourceFileUrl(source: string): string {
 
 /**
  * Same-origin URL for a stored source file, served straight off the Next.js
- * static mount (frontend/public/static/sources → data/sources).
+ * static mount (frontend/public/static/sources -> data/sources).
  *
  * Previews and PDF rendering pull whole files — a 113MB PDF is in the test
  * corpus — and routing those through FastAPI put them behind the same server

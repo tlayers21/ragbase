@@ -84,7 +84,32 @@ export function useIngestion(onComplete?: () => void) {
 
   useEffect(() => () => stopPolling(), [stopPolling]);
 
-  // Auto-fade done jobs: 30s → opacity-0 (1s transition) → remove from display
+  // Adopt whatever the server already has, once, on mount.
+  //
+  // Polling used to start only from uploadFile/ingestText/ingestUrl, so the panel
+  // knew about jobs *this tab* had started and nothing else. Reload the page while
+  // a large PDF was ingesting and the Ingest panel came back empty — no progress
+  // bar, no cancel button — while the worker kept running; a job that had failed
+  // was equally invisible, and with no rows there was no "clear finished" button
+  // to dismiss its error either. `startPolling` is a no-op if a loop is already
+  // running, and every dependency here is a stable useCallback, so this runs once.
+  useEffect(() => {
+    let cancelled = false;
+    fetchIngestionStatus()
+      .then((status) => {
+        if (cancelled) return;
+        setJobs(status.jobs);
+        if (hasActiveJobs(status.jobs)) startPolling(status.jobs);
+      })
+      .catch(() => {
+        // Best-effort: a failed first poll just leaves the panel empty, as before.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [startPolling]);
+
+  // Auto-fade done jobs: 30s -> opacity-0 (1s transition) -> remove from display
   useEffect(() => {
     for (const job of jobs) {
       if (job.status !== "done") continue;

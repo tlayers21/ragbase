@@ -38,7 +38,7 @@ const SOURCE_EXTENSION_RE =
 /**
  * Turn a stored source name into something readable.
  *
- * Sources are slugs produced by `deriveSourceName` (lowercased, spaces → "_"),
+ * Sources are slugs produced by `deriveSourceName` (lowercased, spaces -> "_"),
  * so "applied_combinatorics" has to come back out as "Applied Combinatorics".
  * An already-uppercase word (an acronym like "PDF" from an original filename)
  * is left alone rather than being lowercased into "Pdf".
@@ -66,7 +66,7 @@ export function humanizeSourceName(source: string): string {
 // clearly relevant chunk scoring -5 rendered as "1% match" and anything at or
 // near the -8.0 RERANKER_MIN_SCORE cutoff showed a flat 0%. Mapping the -10..+8
 // range linearly instead spreads the scores the UI actually sees: -8 (the
-// minimum any displayed chunk can have) → 11%, 0 → 56%, +8 → 100%.
+// minimum any displayed chunk can have) -> 11%, 0 -> 56%, +8 -> 100%.
 export function relevancePercent(score: number): number {
   return Math.round(Math.max(0, Math.min(100, ((score + 10) / 18) * 100)));
 }

@@ -18,6 +18,7 @@ from ingestion.queue import (
     get_status,
 )
 from utils.ollama_client import generate_stream
+from utils.text import normalize_title
 
 logger = setup_logging(__name__)
 router = APIRouter(prefix="/ingest", tags=["ingest"])
@@ -118,7 +119,8 @@ async def generate_title(text: str = Form(...)):
     """Generate a short 2-5 word title for ingested text using the fast LLM."""
     prompt = (
         "Generate a short 2-5 word title for this text. "
-        "Reply with only the title, no punctuation, no quotes.\n\n"
+        "Reply in English with only the title, as plain words separated by single "
+        "spaces. No punctuation, no quotes.\n\n"
         f"{text[:500]}"
     )
 
@@ -131,7 +133,7 @@ async def generate_title(text: str = Form(...)):
         logger.warning(f"Title generation failed: {e}")
         title = ""
 
-    return {"title": title}
+    return {"title": normalize_title(title)}
 
 
 @router.get("/status")

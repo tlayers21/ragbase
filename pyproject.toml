@@ -20,7 +20,7 @@ dependencies = [
     # Primary extractor for office formats and typed PDFs (ingestion/office.py,
     # ingestion/pdf.py). Pure Rust wheel — no ML models, no system dependencies,
     # nothing to add to scripts/install.sh.
-    "firecrawl-anydoc>=0.1.7",
+    "firecrawl-anydoc>=0.1.9",
     # Fallback extractor for PDFs anydoc declines: oversized files and unexpected
     # conversion failures. Also the only source of figure detection.
     "docling>=2.0.0",

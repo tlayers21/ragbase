@@ -213,7 +213,10 @@ class BaseIngestor(ABC):
                 where={"source": source_name}, limit=1, include=["metadatas"]
             )
             if existing["ids"]:
-                delete_source(source_name, self.user_id)
+                # remove_file=False: the new upload was already written to
+                # data/sources/{user}/{source}{ext} before this job was enqueued,
+                # so removing "the old source's file" would delete the current one.
+                delete_source(source_name, self.user_id, remove_file=False)
 
             # Store chunks
             stored = self.store(chunks, source_name, extra_meta)

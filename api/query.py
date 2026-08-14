@@ -68,6 +68,28 @@ def _answer_stream(prompt: str) -> Generator[str, None, None]:
     )
 
 
+async def _aiter_answer(prompt: str) -> AsyncGenerator[str, None]:
+    """
+    Pump `_answer_stream` without holding the event loop for the whole answer.
+
+    `generate_stream` is a *blocking* generator, so `for token in _answer_stream(...)`
+    inside an `async def` never gives the loop a chance to run between tokens: no
+    frame reaches the client until generation finishes (the answer lands in one
+    burst instead of streaming) and every other in-flight SSE stream stalls behind
+    it. One `to_thread` per `next()` restores both. The sync `/query/direct`
+    generator does not need this — Starlette already iterates it in a threadpool.
+    """
+    gen = _answer_stream(prompt)
+    sentinel = object()
+    while True:
+        # Sequential awaits, so the generator is only ever advanced by one thread
+        # at a time even though the pool may hand out a different one each call.
+        token = await asyncio.to_thread(next, gen, sentinel)
+        if token is sentinel:
+            return
+        yield token
+
+
 def _sse_token(token: str) -> str:
     """Frame one model token as an SSE event.
 
@@ -257,7 +279,7 @@ async def query_stream(req: QueryRequest, request: Request) -> StreamingResponse
 
         logger.info("Emitting [STAGE] generating")
         yield f"data: [STAGE]{json.dumps({'stage': 'generating'})}\n\n"
-        for token in _answer_stream(prompt):
+        async for token in _aiter_answer(prompt):
             if token:
                 yield _sse_token(token)
 
@@ -446,7 +468,7 @@ async def query_with_attachments(
             if direct:
                 prompt = build_direct_prompt(augmented_question, history_str)
                 yield f"data: [STAGE]{json.dumps({'stage': 'generating'})}\n\n"
-                for token in _answer_stream(prompt):
+                async for token in _aiter_answer(prompt):
                     if token:
                         yield _sse_token(token)
                 yield f"data: [SOURCES]{json.dumps({'sources': [], 'scores': []})}\n\n"
@@ -477,7 +499,7 @@ async def query_with_attachments(
                 prompt = build_answer_prompt(augmented_question, context, history_str)
 
                 yield f"data: [STAGE]{json.dumps({'stage': 'generating'})}\n\n"
-                for token in _answer_stream(prompt):
+                async for token in _aiter_answer(prompt):
                     if token:
                         yield _sse_token(token)
 

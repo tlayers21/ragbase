@@ -147,7 +147,16 @@ function PendingJobProgress({ job }: { job: IngestionJob }) {
   }
 
   if (status.startsWith("error")) {
-    return <p className="text-[10px] text-red-500 truncate">{status}</p>;
+    // "error:" is the wire marker the panel branches on, not something worth
+    // showing — and yt-dlp's own messages already start with "ERROR:", so the row
+    // read "error: ERROR: [youtube] …". The row is already red; strip both. The
+    // panel is 288px wide, so the full text lives in the tooltip.
+    const detail = status.replace(/^error:\s*/i, "").replace(/^ERROR:\s*/, "").trim();
+    return (
+      <p className="text-[10px] text-red-500 truncate" title={detail}>
+        {detail || "Ingestion failed"}
+      </p>
+    );
   }
 
   return null;

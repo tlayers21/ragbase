@@ -41,7 +41,7 @@ export default function HomePage() {
     [jobs]
   );
 
-  // Map source name → job id for sources actively building their graph
+  // Map source name -> job id for sources actively building their graph
   const buildingGraphJobBySrc = useMemo(
     () =>
       Object.fromEntries(

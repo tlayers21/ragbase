@@ -28,13 +28,21 @@ type SourceType = "pdf" | "image" | "text";
  *
  * Prefers the same-origin Next.js static mount so previews and PDF rendering
  * never touch the FastAPI server — it has queries to answer, and these are whole
- * multi-hundred-MB files. Falls back to `/sources/{source}/file` when the
- * extension is unknown (no stored original) or the user id can't be read.
+ * multi-hundred-MB files. Falls back to `/sources/{source}/file` when the user id
+ * can't be read, and returns null when there is no stored original at all.
  */
 function useSourceFileUrl(source: SourceSummary): string | null {
   const [url, setUrl] = useState<string | null>(null);
 
   useEffect(() => {
+    // `GET /documents/` derives file_ext from a listing of data/sources, so an
+    // empty one means no original was ever stored — the FastAPI fallback would
+    // 404 by construction. YouTube is the ordinary case here: its transcript
+    // comes straight out of Whisper and is never written to disk.
+    if (!source.file_ext) {
+      setUrl(null);
+      return;
+    }
     let cancelled = false;
     getStaticSourceFileUrl(source.source, source.file_ext).then((staticUrl) => {
       if (!cancelled) setUrl(staticUrl ?? getSourceFileUrl(source.source));
@@ -73,7 +81,13 @@ function SourceThumbnail({ source }: { source: SourceSummary }) {
 
   useEffect(() => {
     const el = containerRef.current;
-    if (!el || !fileUrl) return;
+    if (!el) return;
+    // No stored original — settle on the generic icon instead of spinning forever.
+    if (!source.file_ext) {
+      setState({ status: "none" });
+      return;
+    }
+    if (!fileUrl) return;
 
     // Aborted on unmount. The card grid unmounts the instant a preview opens, and
     // a request left in flight then fails as net::ERR_FAILED — which Chrome
@@ -157,8 +171,20 @@ function PreviewPane({ source, onClose }: PreviewPaneProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const fileUrl = useSourceFileUrl(source);
+  const hasStoredFile = Boolean(source.file_ext);
 
   useEffect(() => {
+    // Nothing was stored for this source, so there is no file to type-sniff or
+    // render. Land on the neutral empty state below rather than the destructive
+    // "Preview unavailable" — a YouTube transcript is a healthy source, not a
+    // broken one, and the red error read like the ingest had failed.
+    if (!hasStoredFile) {
+      setIsLoading(false);
+      setError(null);
+      setType(null);
+      setTextContent(null);
+      return;
+    }
     if (!fileUrl) return;
     setIsLoading(true);
     setError(null);
@@ -184,7 +210,7 @@ function PreviewPane({ source, onClose }: PreviewPaneProps) {
       });
 
     return () => controller.abort();
-  }, [source, fileUrl]);
+  }, [source, fileUrl, hasStoredFile]);
 
   return (
     <div className="flex flex-col h-full">
@@ -219,6 +245,17 @@ function PreviewPane({ source, onClose }: PreviewPaneProps) {
           <div className="px-4 py-8 text-center">
             <p className="text-sm text-destructive mb-1">Preview unavailable</p>
             <p className="text-xs text-foreground-muted">{error}</p>
+          </div>
+        )}
+
+        {!isLoading && !error && !hasStoredFile && (
+          <div className="px-4 py-10 text-center">
+            <FileText className="mx-auto mb-2 h-6 w-6 text-foreground-muted/30" />
+            <p className="text-sm text-foreground-muted">No original file stored for this source</p>
+            <p className="mt-1 text-xs text-foreground-muted/70">
+              Its {source.chunk_count} chunk{source.chunk_count !== 1 ? "s" : ""} are still
+              searchable.
+            </p>
           </div>
         )}
 

@@ -143,7 +143,7 @@ RAGbase sends anonymous usage telemetry by default: query latency, source
 counts, and a random device ID (e.g. `dev_a3f9b2c1`) that cannot be linked to
 you. Your queries, documents, and personal data are **never** sent — they never
 leave your machine. You can disable telemetry entirely with the toggle in
-**Settings → Send anonymous usage telemetry**.
+**Settings -> Send anonymous usage telemetry**.
 
 ## Resetting
 
