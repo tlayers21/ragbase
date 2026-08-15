@@ -1,5 +1,5 @@
 import { DEFAULT_API_URL } from "@/lib/config";
-import type { AttachmentType, SourceSummary, IngestionStatus } from "@/types";
+import type { AttachmentType, HealthStatus, SourceSummary, IngestionStatus } from "@/types";
 
 // Read runtime overrides from localStorage (set on the settings page).
 function getBaseUrl(): string {
@@ -44,6 +44,20 @@ export async function setTelemetryEnabled(enabled: boolean): Promise<void> {
     body: JSON.stringify({ enabled }),
   });
   if (!res.ok) throw new Error(`setTelemetryEnabled: ${res.status}`);
+}
+
+// ── Health / warmup ──────────────────────────────────────────────────────────
+
+/**
+ * Backend liveness and startup warmup progress.
+ *
+ * `cache: "no-store"` matters — this is polled in a loop and a cached "ready:
+ * false" would leave the UI gated after warmup finished.
+ */
+export async function fetchHealth(): Promise<HealthStatus> {
+  const res = await fetch(`${getBaseUrl()}/health`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`fetchHealth: ${res.status}`);
+  return (await res.json()) as HealthStatus;
 }
 
 // ── Sources ──────────────────────────────────────────────────────────────────

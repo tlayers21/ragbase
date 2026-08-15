@@ -121,6 +121,63 @@ def is_query_in_progress() -> bool:
     return QUERY_IN_PROGRESS
 
 
+# -- Startup warmup ----------------------------------------------------------
+# Warmup pulls every model into memory before the first request (main.py
+# lifespan). It is deliberately non-blocking so the server accepts connections
+# immediately, but a query fired while it runs fights the warmup for the same
+# GPU and either stalls for minutes or times out — which is exactly what a user
+# does when the UI looks ready. This state is what makes that visible: GET
+# /health reports it and the frontend gates its input on `ready`.
+#
+# Only the query-critical steps are registered, so the gate lifts as soon as a
+# query can be served; ingestion-only models keep warming behind it.
+_warmup_lock = threading.Lock()
+_warmup_steps: tuple[str, ...] = ()
+_warmup_completed: set[str] = set()
+_warmup_current: str | None = None
+
+
+def warmup_register(steps: tuple[str, ...]) -> None:
+    """Declare the warmup steps that gate the UI. Call once, before they start."""
+    global _warmup_steps
+    with _warmup_lock:
+        _warmup_steps = tuple(steps)
+        _warmup_completed.clear()
+
+
+def warmup_started(step: str) -> None:
+    """Mark `step` as the one currently loading — the label shown while waiting."""
+    global _warmup_current
+    with _warmup_lock:
+        _warmup_current = step
+
+
+def warmup_finished(step: str) -> None:
+    """
+    Mark `step` as no longer pending.
+
+    Called for failures too: a model that won't load must not hold the UI closed
+    forever, and the first real request will surface the error properly.
+    """
+    global _warmup_current
+    with _warmup_lock:
+        _warmup_completed.add(step)
+        if _warmup_current == step:
+            _warmup_current = None
+
+
+def get_warmup_status() -> dict:
+    """Progress snapshot for GET /health: ready, current step, and counts."""
+    with _warmup_lock:
+        pending = [s for s in _warmup_steps if s not in _warmup_completed]
+        return {
+            "ready": not pending,
+            "current": _warmup_current,
+            "completed": len(_warmup_steps) - len(pending),
+            "total": len(_warmup_steps),
+        }
+
+
 def get_display_name() -> str | None:
     """Optional user-facing display name, or None if never set."""
     return _settings.get("display_name") or None

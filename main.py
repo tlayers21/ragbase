@@ -15,12 +15,25 @@ from api import (
     title_router,
 )
 from config.logging import setup_logging
-from config.models import MODEL_STANDARD, get_model
-from config.runtime import DEVICE_ID, USER_ID, load_settings
-from config.settings import OLLAMA_URL
+from config.models import MODEL_STANDARD
+from config.runtime import (
+    DEVICE_ID,
+    USER_ID,
+    get_warmup_status,
+    load_settings,
+    warmup_finished,
+    warmup_register,
+    warmup_started,
+)
+from config.settings import (
+    OLLAMA_URL,
+    WARMUP_BACKGROUND_TASKS,
+    WARMUP_CRITICAL_TASKS,
+)
 from ingestion.queue import start as start_ingestion_queue
 from ingestion.queue import start_graph_queue
 from retrieval.pipeline import configure_dspy
+from utils.ollama_client import warm
 
 logger = setup_logging(__name__)
 
@@ -34,33 +47,42 @@ async def lifespan(app: FastAPI):
     start_ingestion_queue()
     start_graph_queue()
 
-    async def _warmup_reranker() -> None:
-        try:
+    async def _warm_one(task: str) -> None:
+        """Load one model. `reranker` is a HuggingFace cross-encoder, not an Ollama task."""
+        if task == "reranker":
             from retrieval.reranker import rerank
 
             await asyncio.to_thread(rerank, "warmup", ["warmup"], [{}])
-            logger.info("Reranker warmed up")
-        except Exception as e:
-            logger.warning(f"Reranker warmup failed (first query may be slow): {e}")
+            return
+        await asyncio.to_thread(warm, task)
 
-    async def _warmup_models() -> None:
-        import ollama as _ollama
+    async def _warmup() -> None:
+        """
+        Warm every model, query-critical ones first.
 
+        Sequential and ordered on purpose: the frontend gates its UI on the
+        critical group (config/runtime.py), so those must not queue behind
+        qwen2.5vl, and running them all at once would only have them fight over
+        the same GPU while the user waits.
+        """
         logger.info("Warming up models...")
-        for task in ("answer", "summarize", "embed", "vision_simple"):
-            model = get_model(task)
+        for task in WARMUP_CRITICAL_TASKS + WARMUP_BACKGROUND_TASKS:
+            warmup_started(task)
             try:
-                if task == "embed":
-                    await asyncio.to_thread(_ollama.embed, model=model, input="hi")
-                else:
-                    await asyncio.to_thread(_ollama.generate, model, "hi")
-                logger.info(f"  {task} ({model}) warmed up")
+                await _warm_one(task)
+                logger.info(f"  {task} warmed up")
             except Exception as e:
-                logger.warning(f"  {task} ({model}) warmup failed (non-blocking): {e}")
+                logger.warning(f"  {task} warmup failed (non-blocking): {e}")
+            finally:
+                # Also on failure — a model that won't load must not leave the UI
+                # waiting on it forever.
+                warmup_finished(task)
+            if task == WARMUP_CRITICAL_TASKS[-1]:
+                logger.info("Ready for queries — remaining models warm in the background")
         logger.info("All models warmed up")
 
-    asyncio.create_task(_warmup_reranker())
-    asyncio.create_task(_warmup_models())
+    warmup_register(WARMUP_CRITICAL_TASKS)
+    asyncio.create_task(_warmup())
     logger.info("RAGbase ready")
 
     yield
@@ -92,7 +114,14 @@ app.include_router(title_router)
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    """
+    Liveness plus startup-warmup progress.
+
+    `ready` is false while the models a query needs are still loading — the
+    frontend polls this and keeps its UI blocked until it flips, because a query
+    sent mid-warmup competes with it for the GPU and stalls.
+    """
+    return {"status": "ok", **get_warmup_status()}
 
 
 @app.get("/")

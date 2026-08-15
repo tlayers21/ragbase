@@ -6,7 +6,8 @@ import { MessageBubble } from "./MessageBubble";
 import { ChatInput } from "./ChatInput";
 import { SourceFilter } from "./SourceFilter";
 import { ModelSelector } from "./ModelSelector";
-import type { ChatSession, PendingAttachment, SourceSummary } from "@/types";
+import { IngestionBanner } from "./IngestionBanner";
+import type { ChatSession, IngestionJob, PendingAttachment, SourceSummary } from "@/types";
 
 interface ChatAreaProps {
   session: ChatSession | null;
@@ -16,6 +17,8 @@ interface ChatAreaProps {
   sources: SourceSummary[];
   selectedSources: Set<string>;
   buildingGraphSources: Set<string>;
+  /** Jobs actively consuming the machine — drives the warning banner. */
+  ingestingJobs: IngestionJob[];
   onToggleSource: (source: string) => void;
   onSelectAllSources: () => void;
   onClearAllSources: () => void;
@@ -43,6 +46,7 @@ export function ChatArea({
   sources,
   selectedSources,
   buildingGraphSources,
+  ingestingJobs,
   onToggleSource,
   onSelectAllSources,
   onClearAllSources,
@@ -60,6 +64,10 @@ export function ChatArea({
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
+      {/* Above the top bar, outside the scroll container: the whole point is that
+          it can't be scrolled past or collapsed away like the ingest panel can. */}
+      <IngestionBanner jobs={ingestingJobs} />
+
       {/* Thin top bar with Sources button */}
       <div className="flex items-center justify-end px-4 py-1.5 border-b border-border flex-shrink-0">
         <button

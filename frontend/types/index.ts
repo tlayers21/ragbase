@@ -25,6 +25,17 @@ export interface IngestionStatus {
   jobs: IngestionJob[];
 }
 
+/** GET /health — liveness plus startup warmup progress (main.py lifespan). */
+export interface HealthStatus {
+  status: string;
+  /** False while the models a query needs are still loading. The UI stays gated until true. */
+  ready: boolean;
+  /** Warmup step currently loading ("embed" | "answer" | "reranker"), null between steps. */
+  current: string | null;
+  completed: number;
+  total: number;
+}
+
 // ── App-local types ──────────────────────────────────────────────────────────
 
 export type MessageRole = "user" | "assistant" | "system";
@@ -65,6 +76,11 @@ export interface Message {
   stage?: string;
   /** Generation latency in ms (first token -> [DONE]). */
   latencyMs?: number;
+  /** True if ingestion was running at any point during this query. Ingestion and
+   * queries share one Ollama process, so this is why a given answer was slow —
+   * recorded per message because the banner is long gone by the time anyone
+   * scrolls back and wonders. */
+  ingestionActive?: boolean;
   /** True once onDone fires — guards sources section from rendering during streaming. */
   isComplete?: boolean;
   /** "summary" for auto-compacted conversation summary messages. */

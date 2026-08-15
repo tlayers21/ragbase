@@ -118,6 +118,21 @@ def embed_batch(texts: list[str]) -> list[list[float]]:
     return embeddings
 
 
+def warm(task: str) -> None:
+    """
+    Load the model for `task` into Ollama's memory (startup warmup).
+
+    Embedding models can't answer a generate call, so the task picks the
+    endpoint. Lives here rather than in main.py so every Ollama call in the app
+    still goes through one module.
+    """
+    model = get_model(task)
+    if task == "embed":
+        ollama.embed(model=model, input="warmup")
+    else:
+        ollama.generate(model=model, prompt="hi")
+
+
 def vision(image_path: str | Path, prompt: str, task: str = "vision_handwrite") -> str:
     """Describe or transcribe an image using a vision model."""
     model = get_model(task)

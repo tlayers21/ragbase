@@ -155,7 +155,21 @@ class BaseIngestor(ABC):
             return
         start = time.time()
         try:
-            build_from_chunks(chunks, source, self.user_id)
+            # Polled per chunk so cancelling a build actually stops it. Without
+            # this, cancel_job() only flipped the status string: the build ran to
+            # completion regardless, and deleting the source mid-build left the
+            # rows written after the delete behind as orphans.
+            build_from_chunks(
+                chunks,
+                source,
+                self.user_id,
+                should_stop=(lambda: is_cancelled(self.job_id)) if self.job_id else None,
+            )
+            if self.job_id and is_cancelled(self.job_id):
+                logger.info(f"Graph build for '{source}' cancelled mid-build")
+                # Leave the status as "cancelled" — marking it done here would
+                # tell the UI a build finished that the user stopped.
+                return
             entities, relationships = self._count_graph_items_for_source(source)
             elapsed = time.time() - start
             logger.info(

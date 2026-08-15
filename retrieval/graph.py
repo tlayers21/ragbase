@@ -2,6 +2,7 @@ import json
 import re
 import sqlite3
 import time
+from collections.abc import Callable
 
 import networkx as nx
 from json_repair import repair_json
@@ -249,22 +250,45 @@ def _yield_to_queries(source: str) -> None:
         logger.debug(f"Graph build for '{source}' yielded {waited:.1f}s to an active query")
 
 
-def build_from_chunks(chunks: list[str], source: str, user_id: str) -> None:
+def build_from_chunks(
+    chunks: list[str],
+    source: str,
+    user_id: str,
+    should_stop: Callable[[], bool] | None = None,
+) -> None:
     """
     Extract entities and relationships from all chunks of a source
     and store them in the knowledge graph.
     Called automatically after ingestion.
+
+    `should_stop` is polled once per chunk and again right before that chunk's
+    inserts, so a cancelled or deleted source abandons the build instead of
+    writing rows for something that no longer exists.
     """
     user_id = _validate_user_id(user_id)
     conn = _get_connection(user_id)
 
     total_entities = 0
     total_edges = 0
+    stopped = False
 
     try:
         for chunk in chunks:
+            if should_stop is not None and should_stop():
+                stopped = True
+                break
+
             _yield_to_queries(source)
             extracted = extract_entities(chunk, source)
+
+            # Re-checked after extraction because extraction is the slow part
+            # (one LLM call, seconds). The delete path cancels the job and then
+            # removes this source's rows, so inserting on the strength of a
+            # check made an LLM call ago is how a deleted source ends up with
+            # orphaned nodes.
+            if should_stop is not None and should_stop():
+                stopped = True
+                break
 
             for entity in extracted.get("entities", []):
                 try:
@@ -299,9 +323,28 @@ def build_from_chunks(chunks: list[str], source: str, user_id: str) -> None:
                 except Exception as e:
                     logger.warning(f"Failed to insert relationship: {e}")
 
-        conn.commit()
+            # Commit per chunk, not once after the loop. SQLite allows exactly
+            # one writer, and a deferred transaction stays open from the first
+            # INSERT until the commit — batched across every chunk, that meant
+            # this worker held the write lock for the entire build (~20 min on a
+            # 140-chunk source), including through _yield_to_queries' sleeps.
+            # Any other writer, in practice delete_source(), then waited out its
+            # timeout=30 and raised "database is locked", so deleting a source
+            # mid-build returned a 500 and left it half-deleted — the Chroma
+            # chunks are removed first, so the source vanished from the UI while
+            # its graph rows survived. Committing here caps the lock at one
+            # chunk's inserts and makes the build durable incrementally rather
+            # than all-or-nothing.
+            conn.commit()
     finally:
         conn.close()
+
+    if stopped:
+        logger.info(
+            f"Graph build for '{source}' stopped early (cancelled or deleted): "
+            f"kept {total_entities} entities, {total_edges} relationships"
+        )
+        return
 
     logger.info(
         f"Built graph for '{source}': {total_entities} entities, {total_edges} relationships"

@@ -415,6 +415,18 @@ def cancel_job(job_id: str) -> bool:
     return found
 
 
+def find_active_job(source: str, user_id: str) -> dict | None:
+    """
+    Return the active job for a source, or None.
+
+    Public counterpart to `_find_active_job` for callers outside this module —
+    `api/documents.py` uses it to stop an in-flight ingestion or graph build
+    before deleting the source out from under it.
+    """
+    with _status_lock:
+        return _find_active_job(source, user_id)
+
+
 def is_cancelled(job_id: str) -> bool:
     """Check whether a job has been marked cancelled. Used by ingestors to abort
     long-running extraction loops early once cancellation is requested."""

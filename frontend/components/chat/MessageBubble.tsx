@@ -4,7 +4,7 @@ import { useState, useCallback, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import { Copy, Check as CheckIcon, X, FileText } from "lucide-react";
+import { Copy, Check as CheckIcon, X, FileText, AlertTriangle } from "lucide-react";
 import { cn, humanizeSourceName, relevancePercent } from "@/lib/utils";
 import { CURRENT_MODEL } from "./ModelSelector";
 import type { CitedChunk, Message, MessageAttachment } from "@/types";
@@ -274,6 +274,17 @@ export function MessageBubble({ message }: MessageBubbleProps) {
                       : `${(message.latencyMs / 1000).toFixed(1)}s`}
                   </span>
                 )
+              )}
+              {/* The banner is gone by the time anyone scrolls back to an old
+                  answer, so the reason for its latency has to live on the message. */}
+              {message.ingestionActive && (
+                <span
+                  className="inline-flex items-center gap-1 text-[10px] font-medium text-warning-border"
+                  title="Ingestion was running while this answer was generated — it shared the GPU with document processing."
+                >
+                  <AlertTriangle className="h-2.5 w-2.5" />
+                  slowed by ingestion
+                </span>
               )}
               <div
                 className={cn(

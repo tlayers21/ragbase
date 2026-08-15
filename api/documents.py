@@ -9,6 +9,7 @@ from config.logging import setup_logging
 from config.paths import SOURCES_DIR
 from config.runtime import USER_ID
 from ingestion.helpers import delete_source
+from ingestion.queue import cancel_job, find_active_job
 from utils.chromadb_client import get_collection
 
 logger = setup_logging(__name__)
@@ -116,9 +117,26 @@ async def get_document(source: str):
 @router.delete("/{source}")
 async def delete_document(source: str):
     """Delete a source and all its chunks, summary, and graph data."""
+    # Stop any in-flight job for this source *before* deleting it. A graph build
+    # writes nodes one chunk at a time and holds the SQLite write lock while it
+    # does, so deleting underneath a live build both fought that lock and let the
+    # build keep inserting rows for a source that no longer exists. The build
+    # polls its cancelled status between chunks and abandons the rest.
+    #
+    # Deliberately here rather than in helpers.delete_source(): the re-ingestion
+    # path calls that from inside the very job this would cancel.
+    job = await asyncio.to_thread(find_active_job, source, USER_ID)
+    if job:
+        await asyncio.to_thread(cancel_job, job["id"])
+        logger.info(
+            f"Cancelled active job '{job['id']}' ({job.get('status')}) to delete '{source}'"
+        )
+
     deleted = await asyncio.to_thread(lambda: delete_source(source, USER_ID))
 
-    if deleted == 0:
+    # A source still being ingested has no chunks yet, so `deleted == 0` doesn't
+    # mean "not found" when we just cancelled its job — the delete did real work.
+    if deleted == 0 and job is None:
         raise HTTPException(status_code=404, detail=f"Source '{source}' not found")
 
     return {"status": "ok", "deleted": deleted}

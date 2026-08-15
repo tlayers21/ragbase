@@ -3,6 +3,11 @@
 // reference localhost:8001 anywhere else in the codebase.
 export const DEFAULT_API_URL = "http://localhost:8001";
 
+// How often the warmup gate re-checks GET /health while models load. Model loads
+// take seconds, so polling faster only adds requests the backend answers while
+// it is already busy.
+export const HEALTH_POLL_INTERVAL_MS = 1000;
+
 // Mirrors SUPPORTED_EXTENSIONS in config/settings.py. The backend is still the
 // authority — this only filters the OS file picker, and drag-and-drop bypasses
 // it entirely, so an unsupported file is rejected server-side either way.

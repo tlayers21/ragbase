@@ -25,6 +25,17 @@ RRF_K = 60
 # putting "/no_think" in the prompt is ignored (see §8 of .ai/instructions.md).
 ANSWER_THINKING_ENABLED = False
 
+# -- Startup warmup ------------------------------------------------------------
+# Models are loaded on startup so the first real request doesn't pay the cold
+# start. Warmup runs in the background, but until it finishes it is competing for
+# the same GPU as anything the user does, so the UI blocks on it (GET /health
+# reports the progress). Only the critical group gates the UI — it is what a
+# *query* touches, and it is kept short so the app becomes usable quickly.
+# The background group is ingestion-only and keeps loading after the gate lifts.
+# "reranker" is not an Ollama task key; main.py special-cases it.
+WARMUP_CRITICAL_TASKS = ("embed", "answer", "reranker")
+WARMUP_BACKGROUND_TASKS = ("summarize", "vision_simple")
+
 # -- Graph build / query contention --------------------------------------------
 # A graph build is one LLM call per chunk against the same local Ollama process a
 # query needs, so between extractions the build pauses while a query is in flight

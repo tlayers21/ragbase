@@ -53,7 +53,13 @@ function saveSessions(sessions: ChatSession[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
 }
 
-export function useChat() {
+/**
+ * @param isIngestionBusy Read at send time and again at [DONE] to record whether
+ *   the answer was competing with the ingestion queue. A getter rather than a
+ *   boolean because `sendMessage` closes over its arguments, and a job that
+ *   starts or finishes mid-stream would otherwise be invisible.
+ */
+export function useChat(isIngestionBusy?: () => boolean) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -63,6 +69,12 @@ export function useChat() {
   const abortRef = useRef<AbortController | null>(null);
   const isLoadingRef = useRef(false);
   const generationRef = useRef(0);
+  // Held in a ref so a caller passing an inline getter can't rebuild sendMessage
+  // — and with it every handler the chat tree hangs off — on every render.
+  const isIngestionBusyRef = useRef(isIngestionBusy);
+  useEffect(() => {
+    isIngestionBusyRef.current = isIngestionBusy;
+  }, [isIngestionBusy]);
 
   useEffect(() => {
     shouldResetSessions().then((reset) => {
@@ -269,6 +281,9 @@ export function useChat() {
       let assistantScores: number[] = [];
       let assistantChunks: CitedChunk[] = [];
       let firstTokenTime: number | null = null;
+      // Sampled here and again at [DONE]: a job that starts or drains mid-stream
+      // still shared the GPU with this answer, and either end alone would miss it.
+      let ingestionActive = isIngestionBusyRef.current?.() ?? false;
 
       const handlers = {
         onStage: (stage: string) => {
@@ -335,6 +350,7 @@ export function useChat() {
         onDone: () => {
           const latencyMs =
             firstTokenTime !== null ? Date.now() - firstTokenTime : undefined;
+          ingestionActive = ingestionActive || (isIngestionBusyRef.current?.() ?? false);
           setSessions((prev) => {
             const next = prev.map((s) => {
               if (s.id !== sessionId) return s;
@@ -351,6 +367,7 @@ export function useChat() {
                         mode,
                         stage: undefined,
                         latencyMs,
+                        ingestionActive,
                         isComplete: true,
                       }
                     : m

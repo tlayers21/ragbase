@@ -1,36 +1,34 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# RAGbase frontend
 
-## Getting Started
+The Next.js chat UI for [RAGbase](../README.md) — see the root README for what RAGbase
+is and how to set up the whole app (Ollama, Python backend, models). This directory is
+only the frontend half; on its own it has nothing to talk to.
 
-First, run the development server:
+## Stack
+
+Next.js 16 (App Router) · React 19 · TypeScript · Tailwind v4
+
+## Developing
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Opens on `localhost:3000` and expects the FastAPI backend running at `localhost:8001`
+(`python3 -m uvicorn main:app --port 8001` from the repo root — see the root README).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npx tsc --noEmit   # type-check
+npm run build      # production build — required to verify PDF rendering, dynamic
+                    # imports, and theming; the dev server bundles these differently
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Notes
 
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- There is no separate deploy step. `scripts/install.sh` and `scripts/start.sh` in the
+  repo root build and serve this app as part of RAGbase — it isn't deployed to Vercel or
+  any other host; RAGbase runs entirely on your own machine.
+- `frontend/public/static/sources` is a symlink to `../../../data/sources`, committed as
+  a symlink (mode `120000`) so a fresh clone recreates it. Source file previews depend on
+  it.

@@ -29,8 +29,17 @@ documents and questions never leave your machine.
 - Mac (Apple Silicon recommended) or Linux
 - Windows via WSL2 should work but is untested
 - **[Ollama](https://ollama.ai/download)** — local model inference engine
-- **Python 3.11+** — [python.org](https://www.python.org/downloads/)
+- **Python 3.13+** — [python.org](https://www.python.org/downloads/)
 - **Node.js 18+** — [nodejs.org](https://nodejs.org/)
+- **ffmpeg** — decodes audio for video and YouTube ingestion
+- **poppler** — rasterises pages for scanned and handwritten PDFs
+
+`install.sh` checks for all of these and stops if any is missing. For the last two:
+
+```bash
+brew install ffmpeg poppler          # Mac
+sudo apt install ffmpeg poppler-utils # Debian/Ubuntu
+```
 
 ## Setup
 
@@ -45,7 +54,7 @@ On Linux:
 curl -fsSL https://ollama.com/install.sh | sh
 ```
 
-### 2. Install Python 3.11+
+### 2. Install Python 3.13+
 
 Check if you already have it:
 ```bash
@@ -94,7 +103,9 @@ bash scripts/start.sh
 
 This starts the backend and frontend, then opens your browser to `localhost:3000`.
 On subsequent runs `start.sh` checks for updates automatically and only rebuilds
-the frontend if something changed — startup is fast after the first run.
+the frontend if something changed, so the *scripts* return fast. The app itself
+still shows a loading screen for 15-20 seconds on every launch while it loads
+models into memory — this is normal, not a hang.
 
 ## Updating
 
@@ -126,7 +137,8 @@ runs locally through Ollama. No Docker, no internet required after setup.
 | OCR (standalone images) | PaddleOCR |
 | OCR (typed PDFs) | RapidOCR via Docling |
 
-**Total model footprint: ~15GB**
+**Total model footprint: ~17GB** — ~14GB of Ollama models pulled by `install.sh`, plus
+the reranker (~2GB) and Whisper (~150MB), which download on first use.
 
 ## Hardware
 

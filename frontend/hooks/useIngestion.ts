@@ -20,6 +20,12 @@ const ACTIVE_STATUSES = new Set([
   "building_graph",
 ]);
 
+// The subset of ACTIVE_STATUSES where the job is actually burning the CPU/GPU a
+// query needs, so a warning is warranted. "ingested" and "waiting_for_graph" are
+// hand-off states — the source is already queryable and nothing is running for
+// it — so they'd cry wolf.
+const BUSY_STATUSES = new Set(["queued", "ingesting", "building_graph"]);
+
 function hasActiveJobs(jobs: IngestionJob[]): boolean {
   return jobs.some((j) => ACTIVE_STATUSES.has(j.status));
 }
@@ -245,9 +251,16 @@ export function useIngestion(onComplete?: () => void) {
   const clearableJobCount = jobs.filter(
     (j) => j.status === "done" || j.status === "cancelled" || j.status.startsWith("error")
   ).length;
+  // Cancelled jobs are hidden from the panel the instant the user cancels, before
+  // the server confirms; the banner has to honour that too or it keeps warning
+  // about work the user just stopped.
+  const ingestingJobs = jobs.filter(
+    (j) => BUSY_STATUSES.has(j.status) && !hiddenJobIds.has(j.id)
+  );
 
   return {
     jobs,
+    ingestingJobs,
     activeJobCount,
     clearableJobCount,
     fadingJobIds,

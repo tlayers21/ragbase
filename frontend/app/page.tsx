@@ -5,19 +5,29 @@ import { Sidebar, SidebarToggle } from "@/components/layout/Sidebar";
 import { ChatArea } from "@/components/chat/ChatArea";
 import { SourcesPanel, SourcesPanelToggle } from "@/components/layout/SourcesPanel";
 import { SourcesModal } from "@/components/sources/SourcesModal";
+import { WarmupGate } from "@/components/layout/WarmupGate";
 import { useChat } from "@/hooks/useChat";
+import { useReadiness } from "@/hooks/useReadiness";
 import { useSources } from "@/hooks/useSources";
 import { useIngestion } from "@/hooks/useIngestion";
 import type { PendingAttachment } from "@/types";
 
 export default function HomePage() {
-  const chat = useChat();
+  // useChat needs to know whether ingestion is running, but useIngestion is
+  // declared below it (and depends on useSources). A ref threaded through as a
+  // getter breaks that cycle without reordering the hooks — see useChat.
+  const ingestionBusyRef = useRef(false);
+  const isIngestionBusy = useCallback(() => ingestionBusyRef.current, []);
+
+  const chat = useChat(isIngestionBusy);
   const { sources, refresh: refreshSources } = useSources();
+  const readiness = useReadiness();
 
   const { toast: chatToast, estimatedTokens } = chat;
 
   const {
     jobs,
+    ingestingJobs,
     activeJobCount,
     clearableJobCount,
     fadingJobIds,
@@ -29,6 +39,11 @@ export default function HomePage() {
     cancelJob,
     clearCompleted,
   } = useIngestion(refreshSources);
+
+  const isIngesting = ingestingJobs.length > 0;
+  useEffect(() => {
+    ingestionBusyRef.current = isIngesting;
+  }, [isIngesting]);
 
   // Sources whose knowledge graph is still being built
   const buildingGraphSources = useMemo(
@@ -135,81 +150,98 @@ export default function HomePage() {
     [uploadFile]
   );
 
+  // Cover the app until the backend's models are loaded — see WarmupGate.
+  const showWarmupGate = readiness.checked && !readiness.ready && !readiness.dismissed;
+
   return (
-    <div className="flex h-full w-full overflow-hidden">
-      {/* Left sidebar */}
-      {isSidebarCollapsed ? (
-        <SidebarToggle onClick={() => setIsSidebarCollapsed(false)} />
-      ) : (
-        <Sidebar
-          sessions={chat.sessions}
-          activeSessionId={chat.activeSessionId}
-          estimatedTokens={estimatedTokens}
-          onNewSession={chat.newSession}
-          onSelectSession={chat.selectSession}
-          onDeleteSession={chat.deleteSession}
-          onRenameSession={chat.renameSession}
-          onPinSession={chat.pinSession}
-          onToggleCollapse={() => setIsSidebarCollapsed(true)}
+    <>
+      {showWarmupGate && (
+        <WarmupGate
+          status={readiness.status}
+          error={readiness.error}
+          onDismiss={readiness.dismiss}
         />
       )}
 
-      {/* Center — chat */}
-      <main className="flex flex-1 flex-col overflow-hidden min-w-0 bg-background">
-        <ChatArea
-          session={chat.activeSession}
-          isLoading={chat.isLoading}
-          isStreaming={chat.isStreaming}
-          error={chat.error}
-          sources={sources}
-          selectedSources={selectedSources}
-          buildingGraphSources={buildingGraphSources}
-          onToggleSource={toggleSource}
-          onSelectAllSources={selectAllSources}
-          onClearAllSources={clearAllSources}
-          onSend={handleSend}
-          onStop={chat.stopGeneration}
-          onOpenSourcesModal={() => setIsSourcesModalOpen(true)}
-        />
-      </main>
+      {/* `inert` matters as much as the overlay: the cover blocks clicks, but the
+          chat textarea stays tabbable behind it, and Enter would fire a query at a
+          backend that is still loading. */}
+      <div className="flex h-full w-full overflow-hidden" inert={showWarmupGate}>
+        {/* Left sidebar */}
+        {isSidebarCollapsed ? (
+          <SidebarToggle onClick={() => setIsSidebarCollapsed(false)} />
+        ) : (
+          <Sidebar
+            sessions={chat.sessions}
+            activeSessionId={chat.activeSessionId}
+            estimatedTokens={estimatedTokens}
+            onNewSession={chat.newSession}
+            onSelectSession={chat.selectSession}
+            onDeleteSession={chat.deleteSession}
+            onRenameSession={chat.renameSession}
+            onPinSession={chat.pinSession}
+            onToggleCollapse={() => setIsSidebarCollapsed(true)}
+          />
+        )}
 
-      {/* Right — sources panel */}
-      {isPanelCollapsed ? (
-        <SourcesPanelToggle
-          onClick={() => setIsPanelCollapsed(false)}
-          activeJobCount={activeJobCount}
-        />
-      ) : (
-        <SourcesPanel
-          jobs={jobs}
-          isUploading={isUploading}
-          isCollapsed={isPanelCollapsed}
-          clearableJobCount={clearableJobCount}
-          fadingJobIds={fadingJobIds}
-          hiddenJobIds={hiddenJobIds}
-          onToggleCollapse={() => setIsPanelCollapsed(true)}
-          onDropFiles={handleDropFiles}
-          onCancelJob={cancelJob}
-          onClearCompleted={clearCompleted}
-          onIngestText={ingestText}
-          onIngestUrl={ingestUrl}
-        />
-      )}
+        {/* Center — chat */}
+        <main className="flex flex-1 flex-col overflow-hidden min-w-0 bg-background">
+          <ChatArea
+            session={chat.activeSession}
+            isLoading={chat.isLoading}
+            isStreaming={chat.isStreaming}
+            error={chat.error}
+            sources={sources}
+            selectedSources={selectedSources}
+            buildingGraphSources={buildingGraphSources}
+            ingestingJobs={ingestingJobs}
+            onToggleSource={toggleSource}
+            onSelectAllSources={selectAllSources}
+            onClearAllSources={clearAllSources}
+            onSend={handleSend}
+            onStop={chat.stopGeneration}
+            onOpenSourcesModal={() => setIsSourcesModalOpen(true)}
+          />
+        </main>
 
-      {/* Toast notification */}
-      {chatToast && (
-        <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-lg border border-border bg-surface px-4 py-2.5 shadow-lg">
-          <span className="text-sm text-foreground">{chatToast}</span>
-        </div>
-      )}
+        {/* Right — sources panel */}
+        {isPanelCollapsed ? (
+          <SourcesPanelToggle
+            onClick={() => setIsPanelCollapsed(false)}
+            activeJobCount={activeJobCount}
+          />
+        ) : (
+          <SourcesPanel
+            jobs={jobs}
+            isUploading={isUploading}
+            isCollapsed={isPanelCollapsed}
+            clearableJobCount={clearableJobCount}
+            fadingJobIds={fadingJobIds}
+            hiddenJobIds={hiddenJobIds}
+            onToggleCollapse={() => setIsPanelCollapsed(true)}
+            onDropFiles={handleDropFiles}
+            onCancelJob={cancelJob}
+            onClearCompleted={clearCompleted}
+            onIngestText={ingestText}
+            onIngestUrl={ingestUrl}
+          />
+        )}
 
-      {/* Sources modal — self-contained for deletion; calls refreshSources on change */}
-      <SourcesModal
-        isOpen={isSourcesModalOpen}
-        onClose={() => setIsSourcesModalOpen(false)}
-        onSourcesChanged={refreshSources}
-        buildingGraphJobBySrc={buildingGraphJobBySrc}
-      />
-    </div>
+        {/* Toast notification */}
+        {chatToast && (
+          <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-lg border border-border bg-surface px-4 py-2.5 shadow-lg">
+            <span className="text-sm text-foreground">{chatToast}</span>
+          </div>
+        )}
+
+        {/* Sources modal — self-contained for deletion; calls refreshSources on change */}
+        <SourcesModal
+          isOpen={isSourcesModalOpen}
+          onClose={() => setIsSourcesModalOpen(false)}
+          onSourcesChanged={refreshSources}
+          buildingGraphJobBySrc={buildingGraphJobBySrc}
+        />
+      </div>
+    </>
   );
 }
