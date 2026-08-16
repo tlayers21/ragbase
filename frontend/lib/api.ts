@@ -7,14 +7,16 @@ function getBaseUrl(): string {
   return localStorage.getItem("ragbase_api_url") ?? DEFAULT_API_URL;
 }
 
-// ── User settings ────────────────────────────────────────────────────────────
+// -- User settings ------------------------------------------------------------
 
 export interface UserSettings {
   user_id: string;
   display_name: string | null;
+  /** Retrieval relevance floor in raw reranker logits, not a percentage. */
+  reranker_min_score: number;
 }
 
-// The backend owns the user identity — fetched once per session and cached.
+// The backend owns the user identity - fetched once per session and cached.
 let cachedUserSettings: UserSettings | null = null;
 
 export async function fetchUserSettings(force = false): Promise<UserSettings> {
@@ -46,12 +48,32 @@ export async function setTelemetryEnabled(enabled: boolean): Promise<void> {
   if (!res.ok) throw new Error(`setTelemetryEnabled: ${res.status}`);
 }
 
-// ── Health / warmup ──────────────────────────────────────────────────────────
+/**
+ * Set the retrieval relevance floor, in raw reranker logits - convert from the
+ * displayed percentage with `scoreFromRelevancePercent` before calling.
+ *
+ * Applies to the next query with no backend restart. The server also clears the
+ * semantic cache, which would otherwise keep answering recent questions from
+ * chunks selected under the old threshold.
+ */
+export async function setRerankerThreshold(minScore: number): Promise<void> {
+  const res = await fetch(`${getBaseUrl()}/settings/reranker_threshold`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ min_score: minScore }),
+  });
+  if (!res.ok) throw new Error(`setRerankerThreshold: ${res.status}`);
+  if (cachedUserSettings) {
+    cachedUserSettings = { ...cachedUserSettings, reranker_min_score: minScore };
+  }
+}
+
+// -- Health / warmup ----------------------------------------------------------
 
 /**
  * Backend liveness and startup warmup progress.
  *
- * `cache: "no-store"` matters — this is polled in a loop and a cached "ready:
+ * `cache: "no-store"` matters - this is polled in a loop and a cached "ready:
  * false" would leave the UI gated after warmup finished.
  */
 export async function fetchHealth(): Promise<HealthStatus> {
@@ -60,7 +82,7 @@ export async function fetchHealth(): Promise<HealthStatus> {
   return (await res.json()) as HealthStatus;
 }
 
-// ── Sources ──────────────────────────────────────────────────────────────────
+// -- Sources ------------------------------------------------------------------
 
 export function getSourceFileUrl(source: string): string {
   return `${getBaseUrl()}/sources/${encodeURIComponent(source)}/file`;
@@ -70,8 +92,8 @@ export function getSourceFileUrl(source: string): string {
  * Same-origin URL for a stored source file, served straight off the Next.js
  * static mount (frontend/public/static/sources -> data/sources).
  *
- * Previews and PDF rendering pull whole files — a 113MB PDF is in the test
- * corpus — and routing those through FastAPI put them behind the same server
+ * Previews and PDF rendering pull whole files - a 113MB PDF is in the test
+ * corpus - and routing those through FastAPI put them behind the same server
  * that has to answer queries. Static serving takes the Python process out of the
  * path entirely, and being same-origin it also sidesteps the CORS-cache trap
  * that `/sources/{source}/file` needs `Vary: Origin` to survive.
@@ -85,7 +107,7 @@ export async function getStaticSourceFileUrl(
 ): Promise<string | null> {
   if (!fileExt) return null;
   try {
-    // Cached after the first call — this does not re-hit the backend per source.
+    // Cached after the first call - this does not re-hit the backend per source.
     const { user_id } = await fetchUserSettings();
     return `/static/sources/${encodeURIComponent(user_id)}/${encodeURIComponent(source)}${fileExt}`;
   } catch {
@@ -132,7 +154,7 @@ export async function generateChatTitle(message: string): Promise<string> {
   }
 }
 
-// ── Documents ────────────────────────────────────────────────────────────────
+// -- Documents ----------------------------------------------------------------
 
 export async function fetchSources(): Promise<SourceSummary[]> {
   const res = await fetch(`${getBaseUrl()}/documents/`);
@@ -147,7 +169,7 @@ export async function deleteSource(source: string): Promise<void> {
   if (!res.ok) throw new Error(`deleteSource: ${res.status}`);
 }
 
-// ── Query ────────────────────────────────────────────────────────────────────
+// -- Query --------------------------------------------------------------------
 
 export interface AttachmentResult {
   type: AttachmentType;
@@ -162,7 +184,7 @@ export interface StreamQueryHandlers {
   /** Fired once for /query/with_attachments after attachments are processed server-side. */
   onAttachments?: (attachments: AttachmentResult[]) => void;
   /** The backend's own elapsed time for this request, in ms, delivered just before
-   * [DONE]. Half of the end-to-end latency figure — the caller adds its own time
+   * [DONE]. Half of the end-to-end latency figure - the caller adds its own time
    * from here to final paint. */
   onTiming?: (serverMs: number) => void;
   onDone: () => void;
@@ -190,7 +212,7 @@ async function consumeQueryStream(
     const { done, value } = await reader.read();
     // reader.cancel() (fired by the abort listener above) resolves the pending
     // read() with done:true rather than rejecting it, so an abort must be
-    // detected here explicitly and re-thrown — otherwise this function just
+    // detected here explicitly and re-thrown - otherwise this function just
     // returns normally and the caller's AbortError handling never runs.
     if (done) break;
     if (signal?.aborted) break;
@@ -200,7 +222,7 @@ async function consumeQueryStream(
     buffer = frames.pop() ?? "";
 
     for (const frame of frames) {
-      // Strip only the SSE line framing — never trim the payload. Model tokens
+      // Strip only the SSE line framing - never trim the payload. Model tokens
       // are frequently pure whitespace (" ") or carry a leading/trailing space,
       // and trimming the frame silently drops them: a " " token became "" and
       // was skipped entirely, rendering "12 multiplied by8 equals96".
@@ -248,7 +270,7 @@ async function consumeQueryStream(
           const { server_ms } = JSON.parse(payload.slice("[TIMING]".length));
           if (typeof server_ms === "number") handlers.onTiming?.(server_ms);
         } catch {
-          // ignore malformed timing payload — the latency badge is cosmetic and
+          // ignore malformed timing payload - the latency badge is cosmetic and
           // must never cost the caller an answer it already received
         }
         continue;
@@ -293,7 +315,7 @@ export async function streamQuery(
   await consumeQueryStream(res, handlers, signal);
 }
 
-// Bypasses the RAG pipeline entirely — used when the user has deselected
+// Bypasses the RAG pipeline entirely - used when the user has deselected
 // all sources ("direct LLM mode"). It still emits one [STAGE] event,
 // `generating`; it simply has no retrieval stages to report.
 export async function streamDirectQuery(
@@ -354,7 +376,7 @@ export async function streamAttachmentQuery(
   await consumeQueryStream(res, handlers, signal);
 }
 
-// ── Ingestion ────────────────────────────────────────────────────────────────
+// -- Ingestion ----------------------------------------------------------------
 
 export async function ingestFile(
   file: File,
@@ -364,7 +386,7 @@ export async function ingestFile(
   const form = new FormData();
   form.append("file", file);
   form.append("source", sourceName);
-  // PDFs only — every other format ignores it server-side.
+  // PDFs only - every other format ignores it server-side.
   form.append("describe_images", String(describeImages));
 
   const res = await fetch(`${getBaseUrl()}/ingest/file`, {
@@ -387,11 +409,6 @@ export async function cancelIngestion(jobId: string): Promise<void> {
     { method: "POST" }
   );
   if (!res.ok) throw new Error(`cancelIngestion: ${res.status}`);
-}
-
-export async function clearCompletedJobs(): Promise<void> {
-  const res = await fetch(`${getBaseUrl()}/ingest/clear_completed`, { method: "POST" });
-  if (!res.ok) throw new Error(`clearCompletedJobs: ${res.status}`);
 }
 
 export async function ingestText(
@@ -440,19 +457,23 @@ export async function compactMessages(
 
 /**
  * Timestamp of the most recent `scripts/reset_all.sh` run, or null if the app has
- * never been reset (or the backend isn't reachable yet).
+ * never been reset.
  *
  * The caller compares this against the last value it acted on rather than trusting
- * a one-shot signal, so a reset reaches every browser and a call that fails against
- * a not-yet-warm backend only defers the clear to the next load instead of losing it.
+ * a one-shot signal, so a reset reaches every browser rather than only whichever
+ * tab asked first.
+ *
+ * **Throws when the backend is unreachable, and that distinction is the whole
+ * point.** This used to swallow the error and return null, which is also what "no
+ * reset has ever happened" looks like - so the caller treated a dead port as a
+ * definitive "keep your history". reset_all.sh kills both servers and start.sh
+ * waits only on :3000 before opening the browser, so the single call the app made
+ * landed on a backend that was still importing torch, and the reset was silently
+ * skipped every time. The caller retries on a throw; null means a real answer.
  */
 export async function fetchResetToken(): Promise<number | null> {
-  try {
-    const res = await fetch(`${getBaseUrl()}/sessions/should_reset`);
-    if (!res.ok) return null;
-    const data = await res.json();
-    return typeof data.reset_at === "number" ? data.reset_at : null;
-  } catch {
-    return null;
-  }
+  const res = await fetch(`${getBaseUrl()}/sessions/should_reset`);
+  if (!res.ok) throw new Error(`fetchResetToken: ${res.status}`);
+  const data = await res.json();
+  return typeof data.reset_at === "number" ? data.reset_at : null;
 }

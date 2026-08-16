@@ -1,12 +1,15 @@
-// ── API response shapes ──────────────────────────────────────────────────────
+// -- API response shapes ------------------------------------------------------
 
 export interface SourceSummary {
   source: string;
   chunk_count: number;
   flagged_count: number;
   contradiction_count: number;
-  /** Extension of the stored original (".pdf", ".png", …), "" if no file is stored.
-   * Needed to address the file on the Next.js static mount — the source name is a
+  /** Opening characters of the source's first chunk. Used to preview sources with
+   * no previewable original on disk - YouTube transcripts and office formats. */
+  preview: string;
+  /** Extension of the stored original (".pdf", ".png", ...), "" if no file is stored.
+   * Needed to address the file on the Next.js static mount - the source name is a
    * slug and carries no extension. */
   file_ext: string;
 }
@@ -14,7 +17,7 @@ export interface SourceSummary {
 /** The full status lifecycle of an ingestion job, in order. One job runs
  * extraction *and* its knowledge graph build, so `done` means both are finished.
  * A failure is the literal string `error: <detail>` instead, which is why
- * `IngestionJob.status` stays a plain string — consumers prefix-match on it. */
+ * `IngestionJob.status` stays a plain string - consumers prefix-match on it. */
 export type IngestionJobStatus =
   | "queued"
   | "ingesting"
@@ -35,8 +38,8 @@ export interface IngestionJob {
   estimated_seconds?: number;
   /** Real countable progress through the current phase, when the phase has a
    * countable loop: PDF pages on the VLM and Docling paths, chunks during the
-   * graph build. Absent everywhere else — notably the anydoc typed-PDF path,
-   * which is one opaque subprocess — so consumers must fall back to
+   * graph build. Absent everywhere else - notably the anydoc typed-PDF path,
+   * which is one opaque subprocess - so consumers must fall back to
    * `estimated_seconds`. Cleared by the backend on every status change. */
   progress?: { current: number; total: number; unit?: string };
 }
@@ -45,7 +48,7 @@ export interface IngestionStatus {
   jobs: IngestionJob[];
 }
 
-/** GET /health — liveness plus startup warmup progress (main.py lifespan). */
+/** GET /health - liveness plus startup warmup progress (main.py lifespan). */
 export interface HealthStatus {
   status: string;
   /** False while the models a query needs are still loading. The UI stays gated until true. */
@@ -56,7 +59,7 @@ export interface HealthStatus {
   total: number;
 }
 
-// ── App-local types ──────────────────────────────────────────────────────────
+// -- App-local types ----------------------------------------------------------
 
 export type MessageRole = "user" | "assistant" | "system";
 
@@ -71,13 +74,13 @@ export type QueryMode = "rag" | "direct";
 export type AttachmentType = "image" | "pdf" | "text";
 
 /** Attachment metadata stored on a sent user message. `description` is the VLM
- * output (image) or extracted text (pdf/text) — re-sent in history on every
+ * output (image) or extracted text (pdf/text) - re-sent in history on every
  * subsequent turn so follow-up questions retain the attachment's context. */
 export interface MessageAttachment {
   type: AttachmentType;
   name: string;
   description: string;
-  /** Client-side object URL for image thumbnails only — not persisted across reloads. */
+  /** Client-side object URL for image thumbnails only - not persisted across reloads. */
   previewUrl?: string;
 }
 
@@ -90,7 +93,7 @@ export interface Message {
   chunks?: CitedChunk[];
   attachments?: MessageAttachment[];
   timestamp: number;
-  /** Which endpoint served this response — set once streaming completes. */
+  /** Which endpoint served this response - set once streaming completes. */
   mode?: QueryMode;
   /** Retrieval stage while streaming ("retrieving_sources" | "reranking" | "generating"). */
   stage?: string;
@@ -100,15 +103,10 @@ export interface Message {
    * the post-commit paint, so no clock is ever compared across the two.
    *
    * It used to measure first-token -> [DONE] entirely in the browser, which
-   * excluded retrieval, reranking and every millisecond before the first token —
+   * excluded retrieval, reranking and every millisecond before the first token -
    * i.e. most of what makes a query slow. */
   latencyMs?: number;
-  /** True if ingestion was running at any point during this query. Ingestion and
-   * queries share one Ollama process, so this is why a given answer was slow —
-   * recorded per message because the banner is long gone by the time anyone
-   * scrolls back and wonders. */
-  ingestionActive?: boolean;
-  /** True once onDone fires — guards sources section from rendering during streaming. */
+  /** True once onDone fires - guards sources section from rendering during streaming. */
   isComplete?: boolean;
   /** "summary" for auto-compacted conversation summary messages. */
   type?: "summary";
@@ -123,9 +121,9 @@ export interface ChatSession {
   pinned?: boolean;
 }
 
-// ── Chat input attachments (pre-send, client-only) ────────────────────────────
+// -- Chat input attachments (pre-send, client-only) ----------------------------
 
-/** An attachment staged in ChatInput before sending — not yet processed by the backend. */
+/** An attachment staged in ChatInput before sending - not yet processed by the backend. */
 export interface PendingAttachment {
   id: string;
   type: AttachmentType;

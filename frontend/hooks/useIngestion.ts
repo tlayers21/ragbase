@@ -7,14 +7,13 @@ import {
   ingestUrl as apiIngestUrl,
   fetchIngestionStatus,
   cancelIngestion,
-  clearCompletedJobs,
 } from "@/lib/api";
 import { deriveSourceName } from "@/lib/utils";
 import type { IngestionJob } from "@/types";
 
 // One status set, because there is now one lifecycle: a job holds the single
 // worker from the moment it starts until its knowledge graph is built. There used
-// to be a second, narrower set for "the machine is actually busy" — extraction and
+// to be a second, narrower set for "the machine is actually busy" - extraction and
 // the graph ran on separate queues, so `ingested`/`waiting_for_graph` were hand-off
 // states with nothing running. Both are gone, and so is the distinction.
 const ACTIVE_STATUSES = new Set(["queued", "ingesting", "building_graph"]);
@@ -93,8 +92,8 @@ export function useIngestion(onComplete?: () => void) {
   //
   // Polling used to start only from uploadFile/ingestText/ingestUrl, so the panel
   // knew about jobs *this tab* had started and nothing else. Reload the page while
-  // a large PDF was ingesting and the Ingest panel came back empty — no progress
-  // bar, no cancel button — while the worker kept running; a job that had failed
+  // a large PDF was ingesting and the Ingest panel came back empty - no progress
+  // bar, no cancel button - while the worker kept running; a job that had failed
   // was equally invisible, and with no rows there was no "clear finished" button
   // to dismiss its error either. `startPolling` is a no-op if a loop is already
   // running, and every dependency here is a stable useCallback, so this runs once.
@@ -172,7 +171,7 @@ export function useIngestion(onComplete?: () => void) {
   );
 
   const cancelJob = useCallback(async (jobId: string) => {
-    // hiddenJobIds (not a local jobs filter) is what keeps it hidden — the next
+    // hiddenJobIds (not a local jobs filter) is what keeps it hidden - the next
     // status poll would otherwise bring the now-"cancelled" job right back.
     setHiddenJobIds((prev) => new Set([...prev, jobId]));
     try {
@@ -232,36 +231,11 @@ export function useIngestion(onComplete?: () => void) {
     [startPolling]
   );
 
-  const clearCompleted = useCallback(async () => {
-    try {
-      await clearCompletedJobs();
-      // Mirror the server-side filter: remove done, cancelled, and error jobs
-      setJobs((prev) =>
-        prev.filter(
-          (j) => j.status !== "done" && j.status !== "cancelled" && !j.status.startsWith("error")
-        )
-      );
-    } catch {
-      // ignore — display is best-effort
-    }
-  }, []);
-
   const activeJobCount = jobs.filter((j) => isActiveStatus(j.status)).length;
-  const clearableJobCount = jobs.filter(
-    (j) => j.status === "done" || j.status === "cancelled" || j.status.startsWith("error")
-  ).length;
-  // Cancelled jobs are hidden from the panel the instant the user cancels, before
-  // the server confirms; the banner has to honour that too or it keeps warning
-  // about work the user just stopped.
-  const ingestingJobs = jobs.filter(
-    (j) => isActiveStatus(j.status) && !hiddenJobIds.has(j.id)
-  );
 
   return {
     jobs,
-    ingestingJobs,
     activeJobCount,
-    clearableJobCount,
     fadingJobIds,
     hiddenJobIds,
     isUploading,
@@ -270,6 +244,5 @@ export function useIngestion(onComplete?: () => void) {
     ingestText,
     ingestUrl,
     cancelJob,
-    clearCompleted,
   };
 }

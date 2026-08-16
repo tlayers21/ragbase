@@ -69,7 +69,7 @@ async def lifespan(app: FastAPI):
         over the same GPU while the user waits.
 
         WARMUP_BACKGROUND_TASKS is empty now, so in practice this loop is the
-        critical group alone — the concatenation stays because the split is the
+        critical group alone - the concatenation stays because the split is the
         contract, not the current contents. See the constant for why the
         ingestion-only models were dropped from warmup entirely.
         """
@@ -90,11 +90,11 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.warning(f"  {task} warmup failed (non-blocking): {e}")
             finally:
-                # Also on failure and timeout — a model that won't load must not
+                # Also on failure and timeout - a model that won't load must not
                 # leave the UI waiting on it forever.
                 warmup_finished(task)
             if task == WARMUP_CRITICAL_TASKS[-1] and WARMUP_BACKGROUND_TASKS:
-                logger.info("Ready for queries — remaining models warm in the background")
+                logger.info("Ready for queries - remaining models warm in the background")
         logger.info("All models warmed up")
 
     warmup_register(WARMUP_CRITICAL_TASKS)
@@ -106,7 +106,7 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down RAGbase...")
     # Hand back the several GB the query models hold. They are pinned for
     # OLLAMA_KEEP_ALIVE (3h), which is a long time to keep a GPU occupied for a
-    # process that has exited — but the TTL is finite precisely because this hook
+    # process that has exited - but the TTL is finite precisely because this hook
     # is not guaranteed to run: it fires for Ctrl+C and SIGTERM, not for SIGHUP
     # (closing the terminal), not for the `kill -9` scripts/start.sh opens with,
     # and not for Force Quit. Best-effort by design, one model at a time, and a
@@ -150,7 +150,7 @@ def health():
     """
     Liveness plus startup-warmup progress.
 
-    `ready` is false while the models a query needs are still loading — the
+    `ready` is false while the models a query needs are still loading - the
     frontend polls this and keeps its UI blocked until it flips, because a query
     sent mid-warmup competes with it for the GPU and stalls.
     """

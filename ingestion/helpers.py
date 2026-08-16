@@ -42,7 +42,7 @@ def format_transcript(segments: list[dict], paragraph_gap_seconds: float = 3.0) 
         gap = segment["start"] - prev_end
 
         if gap > paragraph_gap_seconds and current_lines:
-            # Gap detected — flush current paragraph and start a new one
+            # Gap detected - flush current paragraph and start a new one
             paragraph_text = " ".join(current_lines)
             paragraphs.append(f"[{current_start}] {paragraph_text}")
             current_lines = []
@@ -140,7 +140,7 @@ def _delete_source_file(source: str, user_id: str) -> None:
     to clean it up. Matches `{source}.*` because the source name is a slug that
     carries no extension of its own.
 
-    Best-effort by design — a source with no stored original (YouTube, whose
+    Best-effort by design - a source with no stored original (YouTube, whose
     transcript is never written to disk) is the normal case, and a failure here
     must not turn a successful delete into an error.
     """

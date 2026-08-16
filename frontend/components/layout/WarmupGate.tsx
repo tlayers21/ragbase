@@ -10,7 +10,7 @@ const FADE_MS = 300;
 
 /** Width the indeterminate bar sits at while there's no progress to report.
  *  Far enough along to read as "working", short of the end so it doesn't look
- *  stuck at completion. (The ingest panel's bars no longer park like this —
+ *  stuck at completion. (The ingest panel's bars no longer park like this -
  *  every phase there has an estimate to animate against.) */
 const INDETERMINATE_WIDTH = "65%";
 
@@ -37,7 +37,7 @@ interface WarmupGateProps {
  * It exists because the app used to look usable the moment the server bound its
  * port: sending a query or dropping a file during warmup put the request behind
  * several gigabytes of model loading on the same GPU, which reads as a hang or
- * an error. Covering the whole app — not just disabling the chat input — is
+ * an error. Covering the whole app - not just disabling the chat input - is
  * deliberate; uploads and source deletion hit the same contention.
  *
  * **There is no way past it.** An earlier version had a "continue anyway" button;
@@ -47,7 +47,13 @@ interface WarmupGateProps {
  * step with a timeout (so one that *hangs* does too).
  */
 export function WarmupGate({ status, stalled, ready }: WarmupGateProps) {
-  const [hidden, setHidden] = useState(false);
+  // Seeded from `ready` so a mount that is *already* warm renders nothing at all.
+  // useReadiness latches readiness across route changes, so returning from
+  // /settings arrives here with ready=true; starting at `false` instead put a
+  // transparent full-screen overlay in the DOM for the fade duration on every
+  // such return - invisible and click-through, but pointless work and a
+  // confusing thing to find in the tree. A cold load still starts false.
+  const [hidden, setHidden] = useState(ready);
 
   // Stay mounted through the fade, then stop rendering entirely.
   useEffect(() => {
@@ -67,7 +73,7 @@ export function WarmupGate({ status, stalled, ready }: WarmupGateProps) {
   //
   // Clamped because `current` outlives the gate: once the critical group is done
   // the backend moves on to the ingestion-only models, so /health briefly reports
-  // completed === total *and* a current step — which lands at 117% without this.
+  // completed === total *and* a current step - which lands at 117% without this.
   const percent = hasProgress
     ? Math.min(100, Math.round(((completed + (status?.current ? 0.5 : 0)) / total) * 100))
     : 0;
@@ -105,7 +111,7 @@ export function WarmupGate({ status, stalled, ready }: WarmupGateProps) {
           </p>
         </div>
 
-        {/* Always present. The bar is the one thing that must never disappear —
+        {/* Always present. The bar is the one thing that must never disappear -
             a gap in it reads as the app having given up. */}
         <div className="w-full space-y-1.5">
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface">

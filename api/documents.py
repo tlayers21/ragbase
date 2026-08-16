@@ -8,6 +8,7 @@ from analysis.fact_check import check_source_facts
 from config.logging import setup_logging
 from config.paths import SOURCES_DIR
 from config.runtime import USER_ID
+from config.settings import SOURCE_PREVIEW_CHARS
 from ingestion.helpers import delete_source
 from ingestion.queue import active_sources, cancel_job, find_active_job
 from utils.chromadb_client import get_collection
@@ -21,10 +22,16 @@ class SourceSummary(BaseModel):
     chunk_count: int
     flagged_count: int
     contradiction_count: int
-    # Extension of the stored original (".pdf", ".png", …), or "" if the file is
+    # Extension of the stored original (".pdf", ".png", ...), or "" if the file is
     # gone. The frontend needs it to build the static /static/sources/... URL,
     # since the source name is a slug with no extension of its own.
     file_ext: str = ""
+    # Opening characters of the source's first chunk. The sources modal previews the
+    # stored original, which only works for .txt/.md/.csv, images and PDFs - a
+    # YouTube transcript has no original at all and an office document's bytes are a
+    # ZIP header. Those cases rendered an empty box with a generic icon even though
+    # the ingested text was sitting in ChromaDB, so it is carried here.
+    preview: str = ""
 
 
 class ChunkDetail(BaseModel):
@@ -55,7 +62,7 @@ async def _require_finished(source: str) -> None:
 
     409 rather than 404 on purpose: the source exists, it is just not finished,
     and the two need different handling on the client. The queue status file is
-    the authority on "finished" — chunks and the summary are physically in
+    the authority on "finished" - chunks and the summary are physically in
     ChromaDB minutes before the graph build that completes the job, so the
     presence of data proves nothing.
     """
@@ -73,7 +80,7 @@ async def list_documents():
 
     Sources with a job in flight are excluded. This used to be the raw inventory
     of ChromaDB, deliberately, so the sources modal could show a stuck job and
-    let you delete it — but that made every consumer responsible for re-deriving
+    let you delete it - but that made every consumer responsible for re-deriving
     "is this actually usable", and each one reported a `chunk_count` that was
     whatever had been written so far, presented as final. Retrieval already
     excludes these sources (`retrieval/search.py::_exclude_clause`), so listing
@@ -86,8 +93,18 @@ async def list_documents():
     """
     collection = get_collection(USER_ID)
     results = await asyncio.to_thread(lambda: collection.get(include=["metadatas"]))
+    # Only chunk 0 of each source, so this stays one small query rather than pulling
+    # every chunk's text just to read the first one.
+    first_chunks = await asyncio.to_thread(
+        lambda: collection.get(where={"chunk_index": 0}, include=["documents", "metadatas"])
+    )
     extensions = await asyncio.to_thread(_stored_extensions)
     in_flight = await asyncio.to_thread(active_sources, USER_ID)
+
+    previews: dict[str, str] = {}
+    for text, meta in zip(first_chunks.get("documents") or [], first_chunks.get("metadatas") or []):
+        if isinstance(meta, dict) and meta.get("source") and text:
+            previews[meta["source"]] = text[:SOURCE_PREVIEW_CHARS]
 
     # results["metadatas"] can be None when the collection is empty in some
     # ChromaDB versions. Guard against that and skip any malformed entries.
@@ -111,6 +128,7 @@ async def list_documents():
                 flagged_count=sum(1 for c in chunks if c.get("flagged")),
                 contradiction_count=sum(1 for c in chunks if c.get("contradiction")),
                 file_ext=extensions.get(source, ""),
+                preview=previews.get(source, ""),
             )
         )
 
@@ -174,7 +192,7 @@ async def delete_document(source: str):
     deleted = await asyncio.to_thread(lambda: delete_source(source, USER_ID))
 
     # A source still being ingested has no chunks yet, so `deleted == 0` doesn't
-    # mean "not found" when we just cancelled its job — the delete did real work.
+    # mean "not found" when we just cancelled its job - the delete did real work.
     if deleted == 0 and job is None:
         raise HTTPException(status_code=404, detail=f"Source '{source}' not found")
 
@@ -189,7 +207,7 @@ async def check_facts(source: str):
     # (a failed or cancelled build discards everything).
     await _require_finished(source)
 
-    # One LLM call per chunk — minutes on a large source, and it would block the
+    # One LLM call per chunk - minutes on a large source, and it would block the
     # event loop for all of it (no query could even start streaming).
     results = await asyncio.to_thread(check_source_facts, source, USER_ID)
     flagged = sum(1 for r in results if r["flagged"])

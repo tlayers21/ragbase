@@ -4,7 +4,7 @@ import { useState, useCallback, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import { Copy, Check as CheckIcon, X, FileText, AlertTriangle } from "lucide-react";
+import { Copy, Check as CheckIcon, X, FileText } from "lucide-react";
 import { cn, humanizeSourceName, relevancePercent } from "@/lib/utils";
 import { CURRENT_MODEL } from "./ModelSelector";
 import type { CitedChunk, Message, MessageAttachment } from "@/types";
@@ -18,7 +18,7 @@ function CopyButton({ text, className }: { text: string; className?: string }) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
-      // ignore — clipboard not available in some contexts
+      // ignore - clipboard not available in some contexts
     }
   }, [text]);
 
@@ -129,7 +129,7 @@ function ChunksModal({ group, onClose }: { group: SourceGroup; onClose: () => vo
 }
 
 // Same subtle pill styling as the "Sources used" button. Hover shows the full
-// VLM description / extracted text via native title tooltip — no extra modal needed.
+// VLM description / extracted text via native title tooltip - no extra modal needed.
 function AttachmentChip({ attachment }: { attachment: MessageAttachment }) {
   return (
     <div
@@ -198,7 +198,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const [isHovered, setIsHovered] = useState(false);
   const [openSource, setOpenSource] = useState<string | null>(null);
-  // Must run before the early returns below — hooks can't be conditional.
+  // Must run before the early returns below - hooks can't be conditional.
   const sourceGroups = useMemo(() => groupChunksBySource(message.chunks ?? []), [message.chunks]);
   const openGroup = sourceGroups.find((g) => g.source === openSource) ?? null;
 
@@ -256,7 +256,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
             multi-second blocking step followed it. `generating` is the one stage
             whose successor is the token stream: measured on the wire, the gap
             between the [STAGE] frame and the first token is 163ms on a cache hit
-            and 355ms in direct mode — far too short to read, and when both land
+            and 355ms in direct mode - far too short to read, and when both land
             in one reader.read() React batches them and it never paints at all.
             `retrieving_sources` had the same problem whenever a graph exists,
             since `traversing_graph` follows it 190ms later.
@@ -300,17 +300,6 @@ export function MessageBubble({ message }: MessageBubbleProps) {
                       : `${(message.latencyMs / 1000).toFixed(1)}s`}
                   </span>
                 )
-              )}
-              {/* The banner is gone by the time anyone scrolls back to an old
-                  answer, so the reason for its latency has to live on the message. */}
-              {message.ingestionActive && (
-                <span
-                  className="inline-flex items-center gap-1 text-[10px] font-medium text-warning-border"
-                  title="Ingestion was running while this answer was generated — it shared the GPU with document processing."
-                >
-                  <AlertTriangle className="h-2.5 w-2.5" />
-                  slowed by ingestion
-                </span>
               )}
               <div
                 className={cn(

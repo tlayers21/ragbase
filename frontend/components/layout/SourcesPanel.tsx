@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { ChevronRight, X, Trash2, Hourglass, AlertTriangle, Loader2, CheckCircle2, GitBranch } from "lucide-react";
+import { ChevronRight, X, Hourglass, AlertTriangle, Loader2, CheckCircle2, GitBranch } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DropZone } from "@/components/sources/DropZone";
 import { generateTitle } from "@/lib/api";
@@ -9,7 +9,7 @@ import type { IngestionJob } from "@/types";
 
 // Cancellable for its whole life, graph build included: the job holds the single
 // worker until it's done, so stopping it is the only way to get the queue back.
-// Cancelling discards the source's data — see the confirm copy below.
+// Cancelling discards the source's data - see the confirm copy below.
 const CANCELLABLE_STATUSES = new Set(["queued", "ingesting", "building_graph"]);
 
 // One bar across the whole job, split into the two phases it actually has. The
@@ -33,7 +33,7 @@ function slugify(text: string): string {
     .slice(0, 100);
 }
 
-// "Page 3 of 4" / "Chunk 40 of 210" — null whenever the phase has nothing
+// "Page 3 of 4" / "Chunk 40 of 210" - null whenever the phase has nothing
 // countable to report, which is most of them (see IngestionJob.progress).
 function progressLabel(job: IngestionJob): string | null {
   const p = job.progress;
@@ -61,15 +61,12 @@ function PendingJobProgress({ job }: { job: IngestionJob }) {
       ? band[0] + (job.progress.current / job.progress.total) * (band[1] - band[0])
       : barPct;
 
-  // The two fills are computed independently, so the handover between them moves
-  // the bar backwards: a PDF eased to ~35% against its estimate drops to 10.5% the
-  // instant the backend reports "page 1 of 100". Clamp to a high-water mark so the
-  // bar only ever advances, as the comment on PROGRESS_BANDS promises. One mark
-  // spans the whole job because the bands ascend (10-60 then 60-95), so the reset
-  // to a new band's floor on a status change is absorbed rather than shown. Safe
-  // to write during render: Math.max is idempotent, so StrictMode's double render
-  // lands on the same value, and the row is keyed by job.id, so a new job remounts
-  // with a fresh mark.
+  // The two fills are computed independently, so the handover moves the bar backwards:
+  // a PDF eased to ~35% against its estimate drops to 10.5% the instant the backend
+  // reports "page 1 of 100". One mark spans the whole job because the bands ascend,
+  // so a status change's reset to the new floor is absorbed rather than shown.
+  // Writing during render is safe: Math.max is idempotent, and the row is keyed by
+  // job.id, so a new job remounts with a fresh mark.
   const highWater = useRef(0);
   highWater.current = Math.max(highWater.current, rawFillPct);
   const fillPct = highWater.current;
@@ -112,7 +109,7 @@ function PendingJobProgress({ job }: { job: IngestionJob }) {
   }
 
   if (status === "ingesting") {
-    // Real counts mean the bar can't be "over" its estimate — there's nothing left
+    // Real counts mean the bar can't be "over" its estimate - there's nothing left
     // to guess at, so the uncertainty shimmer would be misleading.
     const shimmer = !dataDriven && (overEstimate || !estimated_seconds);
     const phase =
@@ -135,7 +132,7 @@ function PendingJobProgress({ job }: { job: IngestionJob }) {
     );
   }
 
-  // Same blue bar as extraction, continuing up the track — this is the back half
+  // Same blue bar as extraction, continuing up the track - this is the back half
   // of one job, not a separate "already usable" state. Green is reserved for
   // `done`, which is the only point at which the source is queryable.
   if (status === "building_graph") {
@@ -173,8 +170,8 @@ function PendingJobProgress({ job }: { job: IngestionJob }) {
 
   if (status.startsWith("error")) {
     // "error:" is the wire marker the panel branches on, not something worth
-    // showing — and yt-dlp's own messages already start with "ERROR:", so the row
-    // read "error: ERROR: [youtube] …". The row is already red; strip both. The
+    // showing - and yt-dlp's own messages already start with "ERROR:", so the row
+    // read "error: ERROR: [youtube] ...". The row is already red; strip both. The
     // panel is 288px wide, so the full text lives in the tooltip.
     const detail = status.replace(/^error:\s*/i, "").replace(/^ERROR:\s*/, "").trim();
     return (
@@ -313,13 +310,11 @@ interface SourcesPanelProps {
   jobs: IngestionJob[];
   isUploading: boolean;
   isCollapsed: boolean;
-  clearableJobCount: number;
   fadingJobIds: Set<string>;
   hiddenJobIds: Set<string>;
   onToggleCollapse: () => void;
   onDropFiles: (files: File[], describeImages: boolean) => void;
   onCancelJob: (jobId: string) => void;
-  onClearCompleted: () => void;
   onIngestText: (text: string, sourceName: string) => Promise<void>;
   onIngestUrl: (url: string) => Promise<void>;
 }
@@ -328,13 +323,11 @@ export function SourcesPanel({
   jobs,
   isUploading,
   isCollapsed,
-  clearableJobCount,
   fadingJobIds,
   hiddenJobIds,
   onToggleCollapse,
   onDropFiles,
   onCancelJob,
-  onClearCompleted,
   onIngestText,
   onIngestUrl,
 }: SourcesPanelProps) {
@@ -368,18 +361,9 @@ export function SourcesPanel({
           </button>
           <span className="text-sm font-semibold text-foreground ml-0.5">Ingest</span>
         </div>
-        {clearableJobCount > 0 && (
-          <button
-            onClick={onClearCompleted}
-            className="rounded p-1 text-foreground-muted hover:text-foreground transition-colors"
-            title={`Clear ${clearableJobCount} finished job${clearableJobCount !== 1 ? "s" : ""} from display`}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
-        )}
       </div>
 
-      {/* Active-job queue — completed sources live in the Sources modal only */}
+      {/* Active-job queue - completed sources live in the Sources modal only */}
       <div className="flex-1 overflow-y-auto py-1">
         {pendingJobs.length > 0 &&
           pendingJobs.map((job) => {

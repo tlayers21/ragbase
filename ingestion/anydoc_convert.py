@@ -46,7 +46,7 @@ def to_markdown(source_path: str | Path, source_name: str) -> AnydocResult:
     server and the ingestion worker along with it. In a child process it is just
     a non-zero return code, and the caller falls back.
 
-    Never raises — every failure comes back as a non-ok status so ingestion can
+    Never raises - every failure comes back as a non-ok status so ingestion can
     degrade rather than crash.
     """
     source_path = Path(source_path)
@@ -67,7 +67,7 @@ def to_markdown(source_path: str | Path, source_name: str) -> AnydocResult:
 
     try:
         if proc.returncode != 0:
-            # Negative return codes are signals — SIGKILL (-9) is the OOM killer.
+            # Negative return codes are signals - SIGKILL (-9) is the OOM killer.
             logger.warning(
                 f"anydoc worker exited with {proc.returncode} on '{source_name}': "
                 f"{proc.stderr.strip()[-500:]}"

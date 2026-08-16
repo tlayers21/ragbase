@@ -65,7 +65,7 @@ def find_contradictions(source: str, user_id: str) -> int:
         )
 
         query_embedding = embed(doc)
-        # This query had no `where` at all — not even user_id — so it compared
+        # This query had no `where` at all - not even user_id - so it compared
         # against every chunk in the collection, including sources still being
         # ingested, and then wrote contradiction metadata onto them. Reuses the
         # same filter builder as retrieval so "which sources are usable" has one

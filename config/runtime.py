@@ -5,7 +5,7 @@ data/user_id.txt and data/device_id.txt. Mutable settings (telemetry opt-out,
 display name) live in data/settings.json and override config/settings.py defaults.
 
 Also holds QUERY_IN_PROGRESS, the process-wide signal that a user is waiting on a
-query right now — see the "Query priority" section below.
+query right now - see the "Query priority" section below.
 """
 
 import json
@@ -17,7 +17,7 @@ from pathlib import Path
 
 from config.logging import setup_logging
 from config.paths import DEVICE_ID_PATH, SETTINGS_JSON_PATH, USER_ID_PATH
-from config.settings import TELEMETRY_ENABLED
+from config.settings import RERANKER_MIN_SCORE, TELEMETRY_ENABLED
 
 logger = setup_logging(__name__)
 
@@ -82,6 +82,25 @@ def set_telemetry_enabled(enabled: bool) -> None:
     logger.info(f"Telemetry {'enabled' if enabled else 'disabled'}")
 
 
+def get_reranker_min_score() -> float:
+    """
+    The absolute relevance floor for reranked chunks, in raw BGE-reranker logits.
+
+    Read through this getter rather than importing RERANKER_MIN_SCORE directly, so
+    the settings slider applies to the very next query instead of needing a restart:
+    `from config.settings import ...` binds the name once at import, and rebinding
+    the module default would never reach a caller that had already imported it.
+    """
+    return float(_settings.get("reranker_min_score", RERANKER_MIN_SCORE))
+
+
+def set_reranker_min_score(score: float) -> None:
+    """Update the relevance floor and persist it. Takes effect on the next query."""
+    _settings["reranker_min_score"] = float(score)
+    _save_settings()
+    logger.info(f"Reranker minimum score set to {score}")
+
+
 # -- Query priority ----------------------------------------------------------
 # Everything in RAGbase shares one machine and one Ollama process, so a graph
 # build (an LLM call per chunk, running for minutes) directly slows down any
@@ -125,7 +144,7 @@ def is_query_in_progress() -> bool:
 # Warmup pulls every model into memory before the first request (main.py
 # lifespan). It is deliberately non-blocking so the server accepts connections
 # immediately, but a query fired while it runs fights the warmup for the same
-# GPU and either stalls for minutes or times out — which is exactly what a user
+# GPU and either stalls for minutes or times out - which is exactly what a user
 # does when the UI looks ready. This state is what makes that visible: GET
 # /health reports it and the frontend gates its input on `ready`.
 #
@@ -146,7 +165,7 @@ def warmup_register(steps: tuple[str, ...]) -> None:
 
 
 def warmup_started(step: str) -> None:
-    """Mark `step` as the one currently loading — the label shown while waiting."""
+    """Mark `step` as the one currently loading - the label shown while waiting."""
     global _warmup_current
     with _warmup_lock:
         _warmup_current = step

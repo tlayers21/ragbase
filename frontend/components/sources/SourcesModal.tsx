@@ -28,10 +28,10 @@ import type { IngestionJob, SourceSummary } from "@/types";
 const PDFPreview = dynamic(() => import("@/components/sources/PDFPreview"), { ssr: false });
 const PDFThumbnailView = dynamic(() => import("@/components/sources/PDFThumbnail"), { ssr: false });
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// -- Helpers -------------------------------------------------------------------
 
 // "binary" covers everything the ingest surface accepts but nothing here can
-// render — the office formats, e-books and video. It is a real preview outcome,
+// render - the office formats, e-books and video. It is a real preview outcome,
 // not a failure: see sourceTypeFromExt in lib/utils.ts.
 type SourceType = "pdf" | "image" | "text" | "binary";
 
@@ -39,7 +39,7 @@ type SourceType = "pdf" | "image" | "text" | "binary";
  * Where to load a source's stored file from.
  *
  * Prefers the same-origin Next.js static mount so previews and PDF rendering
- * never touch the FastAPI server — it has queries to answer, and these are whole
+ * never touch the FastAPI server - it has queries to answer, and these are whole
  * multi-hundred-MB files. Falls back to `/sources/{source}/file` when the user id
  * can't be read, and returns null when there is no stored original at all.
  */
@@ -53,7 +53,7 @@ function useSourceFileUrl(source: SourceSummary): string | null {
     setUrl(null);
 
     // `GET /documents/` derives file_ext from a listing of data/sources, so an
-    // empty one means no original was ever stored — the FastAPI fallback would
+    // empty one means no original was ever stored - the FastAPI fallback would
     // 404 by construction. YouTube is the ordinary case here: its transcript
     // comes straight out of Whisper and is never written to disk.
     if (!source.file_ext) return;
@@ -79,7 +79,7 @@ async function resolveSourceType(
   return fetchSourceType(source.source, signal);
 }
 
-// ── Thumbnail ─────────────────────────────────────────────────────────────────
+// -- Thumbnail -----------------------------------------------------------------
 
 type ThumbnailState =
   | { status: "idle" }
@@ -94,18 +94,31 @@ function SourceThumbnail({ source }: { source: SourceSummary }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const fileUrl = useSourceFileUrl(source);
 
+  // Where a previewable original doesn't exist, fall back to the opening of the
+  // source's first chunk, which GET /documents/ carries for exactly this. A
+  // YouTube transcript never has a file on disk and an office document's bytes are
+  // a ZIP header, so both used to render an empty box with a generic icon while
+  // their ingested text sat in ChromaDB. Only when there is no preview either does
+  // it settle on the icon.
+  const noFileState = useCallback(
+    (): ThumbnailState =>
+      source.preview ? { status: "text", content: source.preview } : { status: "none" },
+    [source.preview]
+  );
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    // No stored original — settle on the generic icon instead of spinning forever.
+    // No stored original - the chunk preview is already in hand, so there is
+    // nothing to fetch and no reason to wait for the card to scroll into view.
     if (!source.file_ext) {
-      setState({ status: "none" });
+      setState(noFileState());
       return;
     }
     if (!fileUrl) return;
 
     // Aborted on unmount. The card grid unmounts the instant a preview opens, and
-    // a request left in flight then fails as net::ERR_FAILED — which Chrome
+    // a request left in flight then fails as net::ERR_FAILED - which Chrome
     // surfaces as a misleading CORS error and which raced the preview's own request.
     const controller = new AbortController();
 
@@ -122,7 +135,7 @@ function SourceThumbnail({ source }: { source: SourceSummary }) {
             // characters off it, which for a .mp4 source meant downloading the
             // entire video to render a thumbnail of its header bytes.
             if (type === "binary") {
-              setState({ status: "none" });
+              setState(noFileState());
               return;
             }
             if (type !== "text") {
@@ -133,7 +146,7 @@ function SourceThumbnail({ source }: { source: SourceSummary }) {
             setState({ status: "text", content: text.slice(0, 300) });
           })
           .catch((err: Error) => {
-            if (err.name !== "AbortError") setState({ status: "none" });
+            if (err.name !== "AbortError") setState(noFileState());
           });
       },
       { rootMargin: "50px" }
@@ -143,7 +156,7 @@ function SourceThumbnail({ source }: { source: SourceSummary }) {
       observer.disconnect();
       controller.abort();
     };
-  }, [fileUrl, source]);
+  }, [fileUrl, source, noFileState]);
 
   return (
     <div
@@ -160,7 +173,7 @@ function SourceThumbnail({ source }: { source: SourceSummary }) {
       )}
       {state.status === "image" && fileUrl && (
         // crossOrigin makes this a CORS request like any fetch() of the same URL,
-        // so both share one cache entry — see the Vary: Origin note in
+        // so both share one cache entry - see the Vary: Origin note in
         // api/sources.py. Harmless on the same-origin static URL, and still
         // required on the FastAPI fallback.
         // eslint-disable-next-line @next/next/no-img-element
@@ -181,7 +194,45 @@ function SourceThumbnail({ source }: { source: SourceSummary }) {
   );
 }
 
-// ── Preview pane ──────────────────────────────────────────────────────────────
+// -- Preview pane --------------------------------------------------------------
+
+/**
+ * The two cases with no renderable original: a source that was never written to
+ * disk (YouTube) and one whose bytes aren't viewable (office formats, video).
+ *
+ * Both still have ingested text, so they show the opening of the first chunk
+ * rather than an empty panel. The reason there's no original stays as a caption -
+ * "no file was stored" and "the file has no text in it" are different facts, and
+ * collapsing them would make a failed extraction look like a healthy source.
+ */
+function NoFilePreview({ source, message }: { source: SourceSummary; message: string }) {
+  const indexed = `Indexed as ${source.chunk_count} chunk${source.chunk_count !== 1 ? "s" : ""}.`;
+
+  if (!source.preview) {
+    return (
+      <div className="px-4 py-10 text-center">
+        <FileText className="mx-auto mb-2 h-6 w-6 text-foreground-muted/30" />
+        <p className="text-sm text-foreground-muted">{message}</p>
+        <p className="mt-1 text-xs text-foreground-muted/70">{indexed}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-4">
+      <p className="mb-2 flex items-center gap-1.5 text-xs text-foreground-muted/70">
+        <FileText className="h-3 w-3" />
+        {message} · {indexed}
+      </p>
+      <div className="relative">
+        <pre className="text-xs text-foreground leading-relaxed whitespace-pre-wrap font-mono">
+          {source.preview}
+        </pre>
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-background to-transparent" />
+      </div>
+    </div>
+  );
+}
 
 interface PreviewPaneProps {
   source: SourceSummary;
@@ -199,7 +250,7 @@ function PreviewPane({ source, onClose }: PreviewPaneProps) {
   useEffect(() => {
     // Nothing was stored for this source, so there is no file to type-sniff or
     // render. Land on the neutral empty state below rather than the destructive
-    // "Preview unavailable" — a YouTube transcript is a healthy source, not a
+    // "Preview unavailable" - a YouTube transcript is a healthy source, not a
     // broken one, and the red error read like the ingest had failed.
     if (!hasStoredFile) {
       setIsLoading(false);
@@ -272,30 +323,17 @@ function PreviewPane({ source, onClose }: PreviewPaneProps) {
         )}
 
         {!isLoading && !error && !hasStoredFile && (
-          <div className="px-4 py-10 text-center">
-            <FileText className="mx-auto mb-2 h-6 w-6 text-foreground-muted/30" />
-            <p className="text-sm text-foreground-muted">No original file stored for this source</p>
-            {/* This used to say the chunks "are still searchable", which was
-                only true for a finished source — and the modal listed unfinished
-                ones too, where retrieval excludes them outright. The grid is
-                done-only now, so searchable is simply the normal state and does
-                not need asserting; the count is the useful part. */}
-            <p className="mt-1 text-xs text-foreground-muted/70">
-              Indexed as {source.chunk_count} chunk{source.chunk_count !== 1 ? "s" : ""}.
-            </p>
-          </div>
+          <NoFilePreview
+            source={source}
+            message="No original file stored for this source"
+          />
         )}
 
         {!isLoading && !error && type === "binary" && (
-          <div className="px-4 py-10 text-center">
-            <FileText className="mx-auto mb-2 h-6 w-6 text-foreground-muted/30" />
-            <p className="text-sm text-foreground-muted">
-              No preview for {source.file_ext || "this"} files
-            </p>
-            <p className="mt-1 text-xs text-foreground-muted/70">
-              Indexed as {source.chunk_count} chunk{source.chunk_count !== 1 ? "s" : ""}.
-            </p>
-          </div>
+          <NoFilePreview
+            source={source}
+            message={`No preview for ${source.file_ext || "this"} files`}
+          />
         )}
 
         {!isLoading && !error && type === "pdf" && fileUrl && (
@@ -327,7 +365,7 @@ function PreviewPane({ source, onClose }: PreviewPaneProps) {
   );
 }
 
-// ── Source card ───────────────────────────────────────────────────────────────
+// -- Source card ---------------------------------------------------------------
 
 interface SourceCardProps {
   source: SourceSummary;
@@ -410,7 +448,7 @@ function SourceCard({
   );
 }
 
-// ── In-progress section ───────────────────────────────────────────────────────
+// -- In-progress section -------------------------------------------------------
 
 const JOB_STATUS_LABELS: Record<string, string> = {
   queued: "Waiting for the worker…",
@@ -422,14 +460,14 @@ const JOB_STATUS_LABELS: Record<string, string> = {
  * Jobs still occupying the ingestion worker, with a cancel control.
  *
  * `GET /documents/` no longer returns mid-build sources, which is what makes the
- * grid below trustworthy — but the reason it used to was real: you need to be
+ * grid below trustworthy - but the reason it used to was real: you need to be
  * able to see a stuck job and get rid of it. That capability lives here instead,
  * driven by the ingestion queue, which is where a job's status and progress
  * actually are. `SourcesPanel` shows the same jobs in the right-hand panel; this
  * exists so the capability survives that panel being collapsed.
  *
  * Cancelling deletes the source's data (the backend's `_cleanup_partial`), which
- * is what the confirm copy has to say — don't soften it to "progress is lost".
+ * is what the confirm copy has to say - don't soften it to "progress is lost".
  */
 function InProgressSection({
   jobs,
@@ -511,7 +549,7 @@ function InProgressSection({
   );
 }
 
-// ── Modal ─────────────────────────────────────────────────────────────────────
+// -- Modal ---------------------------------------------------------------------
 
 interface SourcesModalProps {
   isOpen: boolean;
@@ -556,7 +594,7 @@ export function SourcesModal({
   // `GET /documents/` is done-only: a job finishing is what *adds* its source to
   // the grid, so without this it would sit in "In progress", disappear, and not
   // reappear until the modal was reopened. Deliberately separate from the effect
-  // above — folding it in would reset `preview` and `confirming` too, closing an
+  // above - folding it in would reset `preview` and `confirming` too, closing an
   // open preview the moment an unrelated background job finished.
   useEffect(() => {
     if (!isOpen) return;
@@ -581,7 +619,7 @@ export function SourcesModal({
     async (source: string) => {
       try {
         // No separate cancel call first: DELETE /documents/{source} finds the
-        // source's active job, cancels it, and only then deletes — one round trip,
+        // source's active job, cancels it, and only then deletes - one round trip,
         // and no window where the job writes rows between our two requests.
         await apiDeleteSource(source);
         setSources((prev) => prev.filter((s) => s.source !== source));
@@ -614,7 +652,7 @@ export function SourcesModal({
       {/* Panel */}
       <div className="relative z-10 w-full max-w-xl mx-4 rounded-xl border border-border bg-background shadow-2xl flex flex-col max-h-[80vh]">
         {preview ? (
-          // ── Preview mode ──────────────────────────────────────────────────
+          // -- Preview mode --------------------------------------------------
           <>
             <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
               <h2 className="text-sm font-semibold text-foreground">Preview</h2>
@@ -630,7 +668,7 @@ export function SourcesModal({
             </div>
           </>
         ) : (
-          // ── Grid mode ─────────────────────────────────────────────────────
+          // -- Grid mode -----------------------------------------------------
           <>
             {/* Header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">

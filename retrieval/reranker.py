@@ -18,7 +18,7 @@ _tokenizer = None
 def _load():
     """Load the BGE-Reranker-v2-m3 model and tokenizer once, reuse on every call.
 
-    This is a base model loaded directly from HuggingFace — no trained checkpoint
+    This is a base model loaded directly from HuggingFace - no trained checkpoint
     needed. BGE-Reranker-v2-m3 loads cleanly in float32 with no NaN issues
     (confirmed via direct testing: logits=[7.79], no NaN, dtype=float32).
     """
@@ -50,7 +50,7 @@ def warm_reranker() -> None:
 
     Startup warmup used to call `rerank("warmup", ["warmup"], [{}])` instead, and
     that reported success no matter what happened: `rerank()` swallows a load
-    failure and returns the original order (correct on the query path — a query
+    failure and returns the original order (correct on the query path - a query
     should degrade, not 500), so a reranker that never loaded still logged
     "reranker warmed up" while every later query silently fell back to unranked
     passthrough with synthetic 1.0 scores. Warmup is the one caller that needs
@@ -83,7 +83,7 @@ def rerank(
     Rerank retrieved chunks using BGE-Reranker-v2-m3 cross-encoder.
 
     Scores each (question, chunk) pair and returns the top_k results sorted
-    by relevance score descending. Uses pure top-k ranking — no absolute
+    by relevance score descending. Uses pure top-k ranking - no absolute
     threshold, since raw cross-encoder scores are not calibrated to a fixed
     cutoff, only relative ordering is meaningful.
 
@@ -95,7 +95,7 @@ def rerank(
     try:
         model, tokenizer = _load()
     except Exception as e:
-        logger.warning(f"Reranker failed to load: {e} — returning original order")
+        logger.warning(f"Reranker failed to load: {e} - returning original order")
         return docs[:top_k], metas[:top_k], [1.0] * min(top_k, len(docs))
 
     device = next(model.parameters()).device

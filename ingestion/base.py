@@ -169,14 +169,14 @@ class BaseIngestor(ABC):
     def _cleanup_partial(self, source: str, reason: str) -> None:
         """Remove everything a job that did not reach "done" had already written.
 
-        "Cancelled" and "failed" are defined the same way — leave nothing behind —
+        "Cancelled" and "failed" are defined the same way - leave nothing behind -
         so a job stopped partway must not leave half a document queryable: chunks,
         summary, whatever graph rows landed, the cache and the stored original all
         go. Safe to call after DELETE /documents/{source} has already run its own
         delete_source(); the second call simply finds nothing.
 
         Named for the outcome rather than for cancellation since 2026-08-16, when
-        the failing graph build started using it too — see `_build_graph`.
+        the failing graph build started using it too - see `_build_graph`.
         """
         try:
             delete_source(source, self.user_id)
@@ -185,7 +185,7 @@ class BaseIngestor(ABC):
             logger.error(f"Cleanup after {reason} '{source}' failed: {e}")
 
     def _build_graph(self, chunks: list[str], source: str) -> None:
-        """Build the knowledge graph — the second half of the job, run inline on
+        """Build the knowledge graph - the second half of the job, run inline on
         the ingestion worker so the source isn't 'ready' until it finishes."""
         # Checked before the status write: setting "building_graph" first would
         # clobber a "cancelled" that landed during the handoff, and the check
@@ -215,7 +215,7 @@ class BaseIngestor(ABC):
             )
             if self.job_id and is_cancelled(self.job_id):
                 logger.info(f"Graph build for '{source}' cancelled mid-build")
-                # Leave the status as "cancelled" — marking it done here would
+                # Leave the status as "cancelled" - marking it done here would
                 # tell the UI a build finished that the user stopped.
                 self._cleanup_partial(source, "cancelled")
                 return
@@ -237,18 +237,12 @@ class BaseIngestor(ABC):
             )
         except Exception as e:
             logger.error(f"Knowledge graph build failed for '{source}': {e}")
-            # Clean up before writing the terminal status, exactly as the
-            # cancelled paths do. "error: ..." is not in _ACTIVE_STATUSES, so the
-            # moment it lands the source leaves active_sources() and becomes
-            # visible to retrieval, the picker and the sources list — with chunks,
-            # a summary and a *partially built* graph behind it. That is precisely
-            # the half-ready state merging the two queues was meant to eliminate,
-            # reached through the failure path instead of the happy one.
-            #
-            # Cost, accepted deliberately: a large document's extraction work is
-            # discarded when its graph build fails, and the user re-ingests. That
-            # is the same trade already accepted for cancellation, and it is the
-            # only way "a source exists" can keep meaning "a source is complete".
+            # Clean up before the terminal status, exactly as the cancelled paths do.
+            # "error: ..." is not in _ACTIVE_STATUSES, so the moment it lands the source
+            # becomes visible to retrieval with a *partially built* graph behind it -
+            # the half-ready state merging the two queues was meant to eliminate.
+            # Accepted cost: a failed graph build discards the extraction work and the
+            # user re-ingests, so "a source exists" keeps meaning "a source is complete".
             self._cleanup_partial(source, "failed")
             self._update_job_status(f"error: {e}")
 
@@ -317,7 +311,7 @@ class BaseIngestor(ABC):
             )
             summary = "".join(generate_stream(summary_prompt, model=get_model("summarize")))
             self.store_summary(summary, source_name)
-            # No status write here — extraction flows straight into the graph
+            # No status write here - extraction flows straight into the graph
             # build, which owns the next transition. The cache is *not* cleared
             # here either: retrieval excludes sources with an in-flight job, so
             # nothing this source could mask is reachable yet. It is cleared
@@ -331,25 +325,25 @@ class BaseIngestor(ABC):
             )
 
             # The graph build runs inline, on this same worker thread, as the rest
-            # of this job — the source is not "done" until it finishes. It used to
+            # of this job - the source is not "done" until it finishes. It used to
             # be deferred onto a second queue so the source became queryable in
             # seconds; that bought speed at the cost of a "queryable but the graph
             # is still pending" state every layer of the app had to model.
             self._build_graph(chunks, source_name)
 
             # The job has left the active set, so retrieval can see this source
-            # from here on — which makes this, not the end of extraction, the
+            # from here on - which makes this, not the end of extraction, the
             # moment every cached retrieval built without it goes stale. Runs
             # for a failed graph build too: the status is terminal either way,
             # so the source becomes visible either way. The cancelled paths
-            # don't reach here and don't need to — delete_source() clears the
+            # don't reach here and don't need to - delete_source() clears the
             # cache itself.
             clear_cache(self.user_id)
 
             return stored
         except IngestionCancelled as e:
             logger.info(f"Ingestion of '{source_name}' cancelled: {e}")
-            # Status was already set to "cancelled" by the cancel endpoint —
+            # Status was already set to "cancelled" by the cancel endpoint -
             # don't overwrite it here. The chunks stored before the cancellation
             # landed do have to go, though.
             self._cleanup_partial(source_name, "cancelled")

@@ -31,7 +31,7 @@ class OfficeIngestor(BaseIngestor):
 
         result = anydoc_convert.to_markdown(source_path, source_name)
         if not result.ok:
-            # No fallback exists for these formats — Docling doesn't cover them and
+            # No fallback exists for these formats - Docling doesn't cover them and
             # there is no VLM path, so surface the reason and let ingest() mark the
             # job as errored rather than storing an empty document.
             raise ValueError(f"anydoc could not convert '{source_name}': {result.detail}")

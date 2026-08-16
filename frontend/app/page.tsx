@@ -13,13 +13,7 @@ import { useIngestion, isActiveStatus } from "@/hooks/useIngestion";
 import type { PendingAttachment } from "@/types";
 
 export default function HomePage() {
-  // useChat needs to know whether ingestion is running, but useIngestion is
-  // declared below it (and depends on useSources). A ref threaded through as a
-  // getter breaks that cycle without reordering the hooks — see useChat.
-  const ingestionBusyRef = useRef(false);
-  const isIngestionBusy = useCallback(() => ingestionBusyRef.current, []);
-
-  const chat = useChat(isIngestionBusy);
+  const chat = useChat();
   const { sources, refresh: refreshSources } = useSources();
   const readiness = useReadiness();
 
@@ -27,9 +21,7 @@ export default function HomePage() {
 
   const {
     jobs,
-    ingestingJobs,
     activeJobCount,
-    clearableJobCount,
     fadingJobIds,
     hiddenJobIds,
     isUploading,
@@ -37,15 +29,9 @@ export default function HomePage() {
     ingestText,
     ingestUrl,
     cancelJob,
-    clearCompleted,
   } = useIngestion(refreshSources);
 
-  const isIngesting = ingestingJobs.length > 0;
-  useEffect(() => {
-    ingestionBusyRef.current = isIngesting;
-  }, [isIngesting]);
-
-  // Sources with a job still in flight — extraction or graph build, they're the
+  // Sources with a job still in flight - extraction or graph build, they're the
   // same lifecycle now.
   const activeJobSources = useMemo(
     () => new Set(jobs.filter((j) => isActiveStatus(j.status)).map((j) => j.source)),
@@ -54,7 +40,7 @@ export default function HomePage() {
 
   // A source isn't offered anywhere until its job is completely finished. Its
   // chunks land in ChromaDB before the graph build starts, so filtering here is
-  // what keeps a half-finished document out of the picker — and it also hides a
+  // what keeps a half-finished document out of the picker - and it also hides a
   // source correctly while it's being *re*-ingested, since its old data is gone
   // by then. It reappears, and rejoins the selection, on "done".
   const readySources = useMemo(
@@ -148,11 +134,16 @@ export default function HomePage() {
     [uploadFile]
   );
 
-  // Cover the app until the backend's models are loaded — see WarmupGate.
+  // Cover the app until the backend's models are loaded - see WarmupGate.
   // Deliberately shown from first paint rather than waiting for the first /health
   // response: that wait left the app visible and clickable for the round trip,
   // which is the exact window the gate exists to close. The gate fades itself out
-  // instead, so an already-warm backend still doesn't flash it.
+  // instead, so a cold load reads as a smooth transition rather than a flash.
+  //
+  // Returning here from /settings used to replay that whole sequence: this page
+  // unmounts on the route change, taking useReadiness' state with it. The hook
+  // latches "ready" at module scope now, so a route return is instant - see
+  // hooks/useReadiness.ts.
   const showWarmupGate = !readiness.ready;
 
   return (
@@ -184,7 +175,7 @@ export default function HomePage() {
           />
         )}
 
-        {/* Center — chat */}
+        {/* Center - chat */}
         <main className="flex flex-1 flex-col overflow-hidden min-w-0 bg-background">
           <ChatArea
             session={chat.activeSession}
@@ -193,7 +184,6 @@ export default function HomePage() {
             error={chat.error}
             sources={readySources}
             selectedSources={selectedSources}
-            ingestingJobs={ingestingJobs}
             onToggleSource={toggleSource}
             onSelectAllSources={selectAllSources}
             onClearAllSources={clearAllSources}
@@ -203,7 +193,7 @@ export default function HomePage() {
           />
         </main>
 
-        {/* Right — sources panel */}
+        {/* Right - sources panel */}
         {isPanelCollapsed ? (
           <SourcesPanelToggle
             onClick={() => setIsPanelCollapsed(false)}
@@ -214,13 +204,11 @@ export default function HomePage() {
             jobs={jobs}
             isUploading={isUploading}
             isCollapsed={isPanelCollapsed}
-            clearableJobCount={clearableJobCount}
             fadingJobIds={fadingJobIds}
             hiddenJobIds={hiddenJobIds}
             onToggleCollapse={() => setIsPanelCollapsed(true)}
             onDropFiles={handleDropFiles}
             onCancelJob={cancelJob}
-            onClearCompleted={clearCompleted}
             onIngestText={ingestText}
             onIngestUrl={ingestUrl}
           />
@@ -233,7 +221,7 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* Sources modal — self-contained for deletion; calls refreshSources on
+        {/* Sources modal - self-contained for deletion; calls refreshSources on
             change. It takes the raw job list rather than a set of active source
             names: `GET /documents/` is done-only now, so the modal no longer has
             to gate anything, but it does render the in-flight jobs itself (with

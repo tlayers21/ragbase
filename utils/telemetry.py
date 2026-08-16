@@ -15,7 +15,7 @@ def send_telemetry(
 ) -> None:
     """Fire-and-forget anonymous telemetry event to the Pi. Never blocks or raises.
 
-    Payloads carry only the anonymous device_id — never the user_id or any
+    Payloads carry only the anonymous device_id - never the user_id or any
     user content. Returns immediately if telemetry is disabled in settings.
     """
     if not is_telemetry_enabled():
@@ -31,6 +31,6 @@ def send_telemetry(
         try:
             requests.post(TELEMETRY_URL, json=payload, timeout=2)
         except Exception:
-            pass  # Pi unreachable — silently ignore
+            pass  # Pi unreachable - silently ignore
 
     threading.Thread(target=_send, daemon=True).start()

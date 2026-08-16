@@ -86,7 +86,7 @@ async def _aiter_answer(prompt: str) -> AsyncGenerator[str, None]:
     frame reaches the client until generation finishes (the answer lands in one
     burst instead of streaming) and every other in-flight SSE stream stalls behind
     it. One `to_thread` per `next()` restores both. The sync `/query/direct`
-    generator does not need this — Starlette already iterates it in a threadpool.
+    generator does not need this - Starlette already iterates it in a threadpool.
     """
     gen = _answer_stream(prompt)
     sentinel = object()
@@ -123,7 +123,7 @@ def _sse_timing(t0: float) -> str:
 
     A separate frame rather than a payload on [DONE], because [DONE] is matched
     exactly (``payload === "[DONE]"``) by the frontend parser and documented as a
-    bare marker in .ai/instructions.md §5.
+    bare marker in .ai/instructions.md section 5.
     """
     elapsed_ms = round((time.perf_counter() - t0) * 1000)
     return f"data: [TIMING]{json.dumps({'server_ms': elapsed_ms})}\n\n"
@@ -155,13 +155,13 @@ def _fresh_cached_response(query_embedding: list[float]) -> dict | None:
     """A cached retrieval, unless it draws on a source that is mid-ingest.
 
     The exclusion filter that keeps unfinished sources out of an answer lives in
-    `search_candidates()`, and a cache hit skips that entirely — so the cache was
+    `search_candidates()`, and a cache hit skips that entirely - so the cache was
     the one path by which an in-flight source could still reach an answer.
 
     Re-ingestion is where this bites. `ingest()` calls `delete_source()` (and so
     `clear_cache()`) only *after* `extract_text()` returns, which on a large PDF
     is minutes. For that whole window the job is active, the source's old chunks
-    are still in ChromaDB, and any cached entry naming it kept being served —
+    are still in ChromaDB, and any cached entry naming it kept being served -
     answering from the version of the document the user was replacing.
 
     Dropping the entry rather than filtering its chunks is deliberate: the cached
@@ -176,16 +176,16 @@ def _fresh_cached_response(query_embedding: list[float]) -> dict | None:
     # An entry with no context is a cached failure, not a cached answer: reranking
     # dropped everything, and serving it replays that miss for the whole TTL even
     # after the source it needed finishes ingesting. Keyed on `context` rather than
-    # `chunks` on purpose — entries written before chunks were stored have no
+    # `chunks` on purpose - entries written before chunks were stored have no
     # `chunks` key but a perfectly good context, and must still be served.
     if not cached.get("context"):
-        logger.info("Discarding cached retrieval — empty context, retrieval returned nothing")
+        logger.info("Discarding cached retrieval - empty context, retrieval returned nothing")
         return None
 
     in_flight = active_sources(USER_ID)
     stale = in_flight.intersection(cached.get("sources", []))
     if stale:
-        logger.info(f"Discarding cached retrieval — sources still ingesting: {sorted(stale)}")
+        logger.info(f"Discarding cached retrieval - sources still ingesting: {sorted(stale)}")
         return None
     return cached
 
@@ -221,7 +221,7 @@ async def query(req: QueryRequest):
         prompt = build_answer_prompt(req.question, cached["context"], history_str)
         answer = "".join(_answer_stream(prompt))
         latency = time.perf_counter() - t0
-        logger.info(f"Cache hit — response in {latency:.2f}s")
+        logger.info(f"Cache hit - response in {latency:.2f}s")
         send_telemetry(
             "query_rag",
             {"latency": round(latency, 2), "question_len": len(req.question), "cache_hit": True},
@@ -238,8 +238,8 @@ async def query(req: QueryRequest):
     prompt = build_answer_prompt(req.question, retrieval["context"], retrieval["history_str"])
     answer = "".join(_answer_stream(prompt))
 
-    # Same empty-retrieval guard as the streaming path. Unreachable today — the
-    # frontend only calls /query/stream — so this is insurance for whenever this
+    # Same empty-retrieval guard as the streaming path. Unreachable today - the
+    # frontend only calls /query/stream - so this is insurance for whenever this
     # endpoint gets a caller again, not a live fix.
     if retrieval["context"]:
         set_cached_response(
@@ -290,7 +290,7 @@ async def query_stream(req: QueryRequest, request: Request) -> StreamingResponse
 
         # The semantic cache is keyed on the query embedding, so a paraphrase of an
         # earlier question reuses its retrieval and skips stages 1-4 entirely. Only
-        # the retrieval context is reused — the answer is always regenerated against
+        # the retrieval context is reused - the answer is always regenerated against
         # the wording actually asked. Source-filtered queries bypass the cache: the
         # cached context was built under a different filter and would leak chunks
         # from sources the user has deselected.
@@ -328,7 +328,7 @@ async def query_stream(req: QueryRequest, request: Request) -> StreamingResponse
                 for doc, meta, score in zip(docs, metas, scores)
             ]
 
-            # Don't cache a retrieval that found nothing — see _fresh_cached_response.
+            # Don't cache a retrieval that found nothing - see _fresh_cached_response.
             # Re-running the pipeline next time costs a few seconds; caching the miss
             # costs every similar question for CACHE_TTL.
             if not req.source_filter and chunks:
@@ -376,7 +376,7 @@ async def query_stream(req: QueryRequest, request: Request) -> StreamingResponse
 @router.post("/direct")
 async def query_direct(req: QueryRequest) -> StreamingResponse:
     """
-    Bypass the RAG pipeline entirely — no retrieval, reranking, or ChromaDB
+    Bypass the RAG pipeline entirely - no retrieval, reranking, or ChromaDB
     queries. Sends the question straight to generate_stream() with qwen3.
     Used when the user has deselected all sources ("direct LLM mode"), so
     the response feels near-instant compared to the full pipeline. Same SSE
@@ -411,15 +411,15 @@ async def query_direct(req: QueryRequest) -> StreamingResponse:
 
 # -- Attachments -------------------------------------------------------------
 # A saved attachment: (temp file path, original filename, content-type, suffix).
-# Attachments are per-turn context only — never ingested into ChromaDB, so
+# Attachments are per-turn context only - never ingested into ChromaDB, so
 # they don't need chunking/embedding, just a text description per file.
 _SavedAttachment = tuple[str, str, str, str]
 
 
 def _extract_pdf_text(path: str) -> str:
-    """Extract plain text from a PDF attachment via PyMuPDF (not Docling —
+    """Extract plain text from a PDF attachment via PyMuPDF (not Docling -
     attachments need a fast one-shot extraction, not the full ingestion pipeline)."""
-    import fitz  # pymupdf is a heavy optional dependency — only load for PDF attachments
+    import fitz  # pymupdf is a heavy optional dependency - only load for PDF attachments
 
     doc = fitz.open(path)
     try:
@@ -492,7 +492,7 @@ async def query_with_attachments(
     Attachments are processed up front (vision description / text extraction),
     emitted as a `data: [ATTACHMENTS]{json}\\n\\n` event, then prepended to the
     question before retrieval/generation. They are never stored as a retrievable
-    source — this is inline context for this conversation only, not ingestion.
+    source - this is inline context for this conversation only, not ingestion.
     """
     t0 = time.perf_counter()
     history_list = json.loads(history) if history else []

@@ -11,6 +11,7 @@ import {
   compactMessages,
   type AttachmentPayload,
 } from "@/lib/api";
+import { HEALTH_POLL_INTERVAL_MS } from "@/lib/config";
 import type { ChatSession, CitedChunk, Message, MessageAttachment, PendingAttachment, QueryMode } from "@/types";
 
 const TOKEN_LIMIT = 40960;
@@ -24,7 +25,7 @@ function estimateTokens(messages: Message[]): number {
 }
 
 // Folds a past message's attachment descriptions into its history content so
-// follow-up questions retain attachment context — descriptions only exist on
+// follow-up questions retain attachment context - descriptions only exist on
 // the frontend's Message objects, never re-sent as files on later turns.
 function historyContent(m: Message): string {
   if (!m.attachments || m.attachments.length === 0) return m.content;
@@ -56,13 +57,7 @@ function saveSessions(sessions: ChatSession[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
 }
 
-/**
- * @param isIngestionBusy Read at send time and again at [DONE] to record whether
- *   the answer was competing with the ingestion queue. A getter rather than a
- *   boolean because `sendMessage` closes over its arguments, and a job that
- *   starts or finishes mid-stream would otherwise be invisible.
- */
-export function useChat(isIngestionBusy?: () => boolean) {
+export function useChat() {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -72,31 +67,58 @@ export function useChat(isIngestionBusy?: () => boolean) {
   const abortRef = useRef<AbortController | null>(null);
   const isLoadingRef = useRef(false);
   const generationRef = useRef(0);
-  // Held in a ref so a caller passing an inline getter can't rebuild sendMessage
-  // — and with it every handler the chat tree hangs off — on every render.
-  const isIngestionBusyRef = useRef(isIngestionBusy);
-  useEffect(() => {
-    isIngestionBusyRef.current = isIngestionBusy;
-  }, [isIngestionBusy]);
 
+  // Load history immediately, then reconcile against reset_all.sh's marker.
+  //
+  // The load can't wait on the backend: reset_all.sh kills both servers, and
+  // start.sh waits only on :3000 before opening the browser, so the first paint
+  // routinely happens while uvicorn is still importing torch. This used to be a
+  // single fetch whose failure was indistinguishable from "never reset", which is
+  // why a reset appeared to leave chat history untouched - and then wiped it on
+  // some unrelated launch days later, whenever the backend happened to win the
+  // race. So: show what's stored, keep asking until the backend actually answers,
+  // and clear both storage and state if the answer is newer than what we've acted on.
   useEffect(() => {
-    fetchResetToken().then((resetAt) => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const stored = loadSessions();
+    setSessions(stored);
+    if (stored.length > 0) {
+      setActiveSessionId(stored[stored.length - 1].id);
+    }
+
+    const checkReset = async () => {
+      let resetAt: number | null;
+      try {
+        resetAt = await fetchResetToken();
+      } catch {
+        // Backend not up yet. Retry on the same cadence useReadiness polls at,
+        // rather than deferring the clear to some future page load.
+        if (!cancelled) timer = setTimeout(checkReset, HEALTH_POLL_INTERVAL_MS);
+        return;
+      }
+      if (cancelled) return;
       // Clear only when the backend reports a reset *newer* than the one this
       // browser last handled. Comparing tokens rather than consuming a one-shot
-      // flag is what makes a reset reach a second tab or a second browser at all,
-      // and makes a failed call (backend still warming) defer the clear to the
-      // next load rather than swallow it.
+      // flag is what makes a reset reach a second tab or a second browser at all.
       const seen = Number(localStorage.getItem(RESET_TOKEN_KEY) ?? 0);
       if (resetAt !== null && resetAt > seen) {
         localStorage.removeItem(STORAGE_KEY);
         localStorage.setItem(RESET_TOKEN_KEY, String(resetAt));
+        // State was populated above, so storage alone isn't enough - and any
+        // later saveSessions() would write the stale list straight back.
+        setSessions([]);
+        setActiveSessionId(null);
       }
-      const stored = loadSessions();
-      setSessions(stored);
-      if (stored.length > 0) {
-        setActiveSessionId(stored[stored.length - 1].id);
-      }
-    });
+    };
+
+    checkReset();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null;
@@ -156,7 +178,7 @@ export function useChat(isIngestionBusy?: () => boolean) {
       attachments: PendingAttachment[] = []
     ) => {
       if (isLoadingRef.current) {
-        // A previous stream is still open — abort it and give the fetch a
+        // A previous stream is still open - abort it and give the fetch a
         // moment to actually tear down before opening a new one, or the
         // in-flight reader can throw "Error in input stream".
         abortRef.current?.abort();
@@ -212,7 +234,7 @@ export function useChat(isIngestionBusy?: () => boolean) {
           setToast("Conversation compacted to save context space");
           setTimeout(() => setToast(null), 4000);
         } catch {
-          // Non-blocking — continue without compaction if it fails
+          // Non-blocking - continue without compaction if it fails
         }
       }
 
@@ -295,9 +317,6 @@ export function useChat(isIngestionBusy?: () => boolean) {
       // the [TIMING] frame. The other half is measured from [DONE] to final paint,
       // below. Two deltas, two clocks, never subtracted from each other.
       let serverMs: number | null = null;
-      // Sampled here and again at [DONE]: a job that starts or drains mid-stream
-      // still shared the GPU with this answer, and either end alone would miss it.
-      let ingestionActive = isIngestionBusyRef.current?.() ?? false;
 
       const handlers = {
         onStage: (stage: string) => {
@@ -339,7 +358,7 @@ export function useChat(isIngestionBusy?: () => boolean) {
           assistantChunks = chunks;
         },
         onAttachments: (results: { type: string; name: string; description: string }[]) => {
-          // Patches descriptions onto the USER message (not the assistant reply) —
+          // Patches descriptions onto the USER message (not the assistant reply) -
           // relies on the backend processing attachments in the same order sent.
           setSessions((prev) =>
             prev.map((s) => {
@@ -366,7 +385,6 @@ export function useChat(isIngestionBusy?: () => boolean) {
         },
         onDone: () => {
           const doneAt = performance.now();
-          ingestionActive = ingestionActive || (isIngestionBusyRef.current?.() ?? false);
           setSessions((prev) => {
             const next = prev.map((s) => {
               if (s.id !== sessionId) return s;
@@ -382,7 +400,6 @@ export function useChat(isIngestionBusy?: () => boolean) {
                         chunks: assistantChunks,
                         mode,
                         stage: undefined,
-                        ingestionActive,
                         isComplete: true,
                       }
                     : m
@@ -396,7 +413,7 @@ export function useChat(isIngestionBusy?: () => boolean) {
 
           // The commit triggered above is where the real cost lives: React renders
           // the whole transcript, re-parses the full answer through
-          // markdown + KaTeX, and writes every session to localStorage — all of it
+          // markdown + KaTeX, and writes every session to localStorage - all of it
           // *after* [DONE] was parsed. Reading the clock here would miss all of it,
           // which is the undercount this replaces.
           //
@@ -444,7 +461,7 @@ export function useChat(isIngestionBusy?: () => boolean) {
           await streamQuery(content, history, sourceFilter, handlers, controller.signal);
         }
       } catch (err) {
-        // Abort is intentional — keep whatever content was streamed
+        // Abort is intentional - keep whatever content was streamed
         if ((err as { name?: string }).name === "AbortError") {
           handlers.onDone();
           // "Stopped." stays on the message permanently so the user always

@@ -1,7 +1,8 @@
 import dspy
 
 from config.logging import setup_logging
-from config.settings import RERANKER_MAX_SCORE_GAP, RERANKER_MIN_SCORE, TOP_K_CANDIDATES
+from config.runtime import get_reranker_min_score
+from config.settings import RELEVANCE_SCALE_MIN, RERANKER_MAX_SCORE_GAP, TOP_K_CANDIDATES
 from ingestion.queue import active_sources
 from retrieval.graph import has_graph, query_related_sources
 from retrieval.reranker import rerank
@@ -87,7 +88,7 @@ class RAGPipeline(dspy.Module):
     5. Threshold filter
     6. Answer generation
 
-    NOTE: self.rewriter (QueryRewriter) is retained but unused in forward() —
+    NOTE: self.rewriter (QueryRewriter) is retained but unused in forward() -
     ml/collect_pairs.py and ml/eval.py still call pipeline.rewriter directly
     to reproduce the retrieval path with a rewritten query for training data
     collection and evaluation.
@@ -186,7 +187,7 @@ class RAGPipeline(dspy.Module):
         if source_filter:
             source_filter = [s for s in source_filter if s not in excluded]
             if not source_filter:
-                logger.info("Every requested source is still ingesting — no candidates")
+                logger.info("Every requested source is still ingesting - no candidates")
                 return [], []
 
         # Step 1 - Document-level retrieval (already excludes unfinished sources)
@@ -231,10 +232,12 @@ class RAGPipeline(dspy.Module):
         Step 4 of retrieval: rerank candidate chunks against the original question
         and drop the ones that aren't relevant enough to cite or to prompt with.
 
-        Two cutoffs, both in raw reranker logits. RERANKER_MIN_SCORE is the absolute
-        floor. RERANKER_MAX_SCORE_GAP is relative to the best chunk in *this* result
-        set, which catches the case the floor can't: every chunk clears the bar, but
-        one is far ahead and the rest are padding.
+        Two cutoffs, both in raw reranker logits. The absolute floor is user-tunable
+        from the settings slider (`get_reranker_min_score()`, defaulting to
+        RERANKER_MIN_SCORE) and is read per call so a change applies immediately.
+        RERANKER_MAX_SCORE_GAP is relative to the best chunk in *this* result set,
+        which catches the case the floor can't: every chunk clears the bar, but one is
+        far ahead and the rest are padding.
 
         The surviving lists feed both the prompt and the [SOURCES] frame, so a chunk
         dropped here is dropped from the answer and the sources panel together.
@@ -249,7 +252,15 @@ class RAGPipeline(dspy.Module):
         )
 
         # rerank() returns descending by score, so scores[0] is the best.
-        floor = max(RERANKER_MIN_SCORE, scores[0] - RERANKER_MAX_SCORE_GAP)
+        min_score = get_reranker_min_score()
+        # At the bottom of the display scale the slider means "show me everything",
+        # so the relative cutoff is bypassed too. Leaving it armed there would still
+        # drop the weak stragglers it exists to catch, and the slider would look
+        # broken at exactly the end where the user asked for more, not less.
+        if min_score <= RELEVANCE_SCALE_MIN:
+            floor = min_score
+        else:
+            floor = max(min_score, scores[0] - RERANKER_MAX_SCORE_GAP)
         filtered = [(d, m, s) for d, m, s in zip(docs, metas, scores) if s >= floor]
         if filtered:
             docs = [d for d, _, _ in filtered]
@@ -257,7 +268,7 @@ class RAGPipeline(dspy.Module):
             scores = [s for _, _, s in filtered]
             logger.info(f"Passing {len(docs)} chunks above threshold to LLM")
         else:
-            logger.info("No chunks above threshold — LLM will answer from own knowledge")
+            logger.info("No chunks above threshold - LLM will answer from own knowledge")
             docs, metas, scores = [], [], []
 
         return docs, metas, scores
@@ -271,7 +282,7 @@ class RAGPipeline(dspy.Module):
     ) -> tuple[list[str], list[dict], list[float]]:
         """
         Full retrieval: candidate search with `query`, then rerank against
-        `original_question` — the two differ when callers (ml/ scripts) search
+        `original_question` - the two differ when callers (ml/ scripts) search
         with a rewritten query but still score against the user's phrasing.
         """
         docs, metas = self.search_candidates(query, user_id, source_filter)
@@ -320,7 +331,7 @@ def build_answer_prompt(question: str, context: str, history_str: str) -> str:
 
 def build_direct_prompt(question: str, history_str: str) -> str:
     """
-    Construct a minimal prompt for direct (non-RAG) mode — no retrieved
+    Construct a minimal prompt for direct (non-RAG) mode - no retrieved
     context, just the question and recent conversation history.
     """
     if not history_str:

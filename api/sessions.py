@@ -12,7 +12,7 @@ RESET_FLAG = DATA_DIR / "reset_sessions_flag"
 @router.get("/should_reset")
 def should_reset():
     """
-    Returns {reset_at: <mtime>} — the time of the most recent reset_all.sh run, or
+    Returns {reset_at: <mtime>} - the time of the most recent reset_all.sh run, or
     null if the app has never been reset.
 
     Chat sessions live in the browser's localStorage and never on the backend, so
@@ -31,7 +31,7 @@ def should_reset():
     try:
         return {"reset_at": RESET_FLAG.stat().st_mtime}
     except OSError as e:
-        # Treat an unreadable flag as "no reset" rather than failing the request —
+        # Treat an unreadable flag as "no reset" rather than failing the request -
         # the frontend would otherwise be unable to load chat history at all.
         logger.warning(f"Failed to stat reset flag: {e}")
         return {"reset_at": None}

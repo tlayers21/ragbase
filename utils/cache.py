@@ -1,6 +1,6 @@
 """SQLite-backed semantic query cache at data/cache.db.
 
-Stores retrieval context (not answers) keyed by query embedding — a cache hit
+Stores retrieval context (not answers) keyed by query embedding - a cache hit
 returns previously retrieved chunks for a semantically similar query, and the
 caller regenerates a fresh answer. Entries expire after CACHE_TTL (24h).
 """

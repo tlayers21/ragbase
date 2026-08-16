@@ -41,7 +41,7 @@ export function SourceFilter({
     [sources, search]
   );
 
-  // Always render — show a placeholder when no sources exist
+  // Always render - show a placeholder when no sources exist
   if (sources.length === 0) {
     return (
       <div className="px-4 py-2 border-t border-border bg-background flex-shrink-0 flex items-center justify-between gap-2">

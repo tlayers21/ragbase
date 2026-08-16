@@ -52,7 +52,7 @@ def build_training_examples(eval_file: str = "eval_set.json") -> list[InputExamp
 def finetune(eval_file: str = "eval_set.json") -> None:
     examples = build_training_examples(eval_file)
     if not examples:
-        print("No training examples found — check eval_set.json has correct_chunk_text field")
+        print("No training examples found - check eval_set.json has correct_chunk_text field")
         return
 
     print(f"Loading {MODEL_NAME}...")

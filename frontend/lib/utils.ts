@@ -15,7 +15,7 @@ export function deriveSourceName(filename: string): string {
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".tiff"]);
 
 // Formats whose bytes are meaningful as characters. Everything else that the
-// ingest surface accepts — the 20 office formats, e-books, video — is a
+// ingest surface accepts - the 20 office formats, e-books, video - is a
 // container we have no renderer for.
 const TEXT_EXTENSIONS = new Set([".txt", ".md", ".csv"]);
 
@@ -24,12 +24,12 @@ const TEXT_EXTENSIONS = new Set([".txt", ".md", ".csv"]);
  *
  * The extension arrives with the source listing (`SourceSummary.file_ext`),
  * which is what lets previews skip the HEAD against `/sources/{source}/file`
- * that used to sniff Content-Type — one fewer FastAPI round-trip per card.
+ * that used to sniff Content-Type - one fewer FastAPI round-trip per card.
  *
  * The fourth kind, `"binary"`, exists because this used to end in a bare
  * `return "text"`. `SUPPORTED_EXTENSIONS` on the backend covers 20 office
  * formats plus five video containers, so `.docx`, `.pptx`, `.xlsx`, `.epub` and
- * `.mp4` all resolved to "text" — and the preview pane then fetched the file and
+ * `.mp4` all resolved to "text" - and the preview pane then fetched the file and
  * dumped 800 characters of ZIP or OLE header into a `<pre>`. For a video it was
  * worse than cosmetic: `fetchTextFile` downloads the response in full and calls
  * `.text()` on it *before* the slice, so previewing a 300MB .mp4 pulled the
@@ -73,7 +73,7 @@ export function humanizeSourceName(source: string): string {
 }
 
 // BGE-Reranker-v2-m3 emits raw, unbounded logits (roughly -10..+8), not
-// probabilities — multiplying one by 100 yields nonsense like "-399% match".
+// probabilities - multiplying one by 100 yields nonsense like "-399% match".
 //
 // A sigmoid was the obvious normalization but is wrong for display here: it
 // saturates near 0 across most of the reranker's actual output range, so a
@@ -83,4 +83,16 @@ export function humanizeSourceName(source: string): string {
 // minimum any displayed chunk can have) -> 11%, 0 -> 56%, +8 -> 100%.
 export function relevancePercent(score: number): number {
   return Math.round(Math.max(0, Math.min(100, ((score + 10) / 18) * 100)));
+}
+
+// The inverse, for the settings threshold slider: the user picks a percentage on
+// the same scale the match badges use, and the backend wants the raw logit.
+// Anchors: 0% -> -10.0, 44% -> -2.08 (the shipped default floor), 100% -> +8.0.
+//
+// Not a true inverse at the ends, because relevancePercent clamps - every score
+// at or below -10 displays as 0%. That only matters in the direction that's
+// harmless here: 0% asks for everything, and the backend treats a floor at the
+// bottom of the scale as exactly that (see rerank_candidates).
+export function scoreFromRelevancePercent(percent: number): number {
+  return (percent / 100) * 18 - 10;
 }

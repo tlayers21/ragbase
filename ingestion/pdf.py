@@ -43,7 +43,7 @@ class PdfIngestor(BaseIngestor):
     `describe_images` is opt-in per file (the "Describe diagrams" checkbox in the
     UI). Embedded figures are largely vector drawings, which only Docling's layout
     model detects, so describing them means paying for a Docling pass on top of
-    anydoc — worth it for slide decks full of diagrams, wasteful for prose.
+    anydoc - worth it for slide decks full of diagrams, wasteful for prose.
     """
 
     def __init__(self, user_id: str, job_id: str | None = None, describe_images: bool = False):
@@ -68,7 +68,7 @@ class PdfIngestor(BaseIngestor):
         size = source_path.stat().st_size
         if size >= PDF_ANYDOC_MAX_BYTES:
             logger.info(
-                f"'{source_name}' is {size / 1e6:.0f}MB, above the anydoc memory ceiling — "
+                f"'{source_name}' is {size / 1e6:.0f}MB, above the anydoc memory ceiling - "
                 f"using Docling instead"
             )
             return self._extract_with_docling(source_path, source_name)
@@ -100,7 +100,7 @@ class PdfIngestor(BaseIngestor):
         the same question, and on large scanned books that means gigabytes of RAM for
         an answer PyMuPDF gives in well under a second from page metadata.
 
-        Returning False only means "there is text" — anydoc still gets the final say
+        Returning False only means "there is text" - anydoc still gets the final say
         via its own `OCR is required` verdict.
         """
         try:
@@ -144,7 +144,7 @@ class PdfIngestor(BaseIngestor):
         Optionally describe the PDF's figures and append them to anydoc's Markdown.
 
         anydoc returns one blob with no page provenance, so descriptions can't be
-        interleaved the way the Docling path does it — they are appended as a trailing
+        interleaved the way the Docling path does it - they are appended as a trailing
         section tagged with the page each figure came from. Chunking is by word count,
         so the descriptions still become retrievable chunks; they just aren't adjacent
         to their page's prose.
@@ -195,7 +195,7 @@ class PdfIngestor(BaseIngestor):
         Each page gets up to MAX_RETRIES attempts. On each retry the timeout
         is increased to give Qwen2.5-VL more time for difficult pages.
         """
-        # pdf2image is a heavy optional dependency — import lazily so it's
+        # pdf2image is a heavy optional dependency - import lazily so it's
         # only loaded when a handwritten PDF is actually being transcribed.
         from pdf2image import convert_from_path
 
@@ -251,11 +251,11 @@ class PdfIngestor(BaseIngestor):
                     # Each retry gets more time
                     timeout = BASE_TIMEOUT * attempt
                     logger.info(
-                        f"Page {i + 1} — attempt {attempt}/{MAX_RETRIES} (timeout: {timeout}s)"
+                        f"Page {i + 1} - attempt {attempt}/{MAX_RETRIES} (timeout: {timeout}s)"
                     )
                     try:
                         page_text = self._transcribe_page(tmp_path, i + 1, timeout=timeout)
-                        break  # Success — stop retrying
+                        break  # Success - stop retrying
                     except TimeoutError:
                         if attempt < MAX_RETRIES:
                             logger.warning(
@@ -265,14 +265,14 @@ class PdfIngestor(BaseIngestor):
                         else:
                             logger.error(
                                 f"Page {i + 1} failed all {MAX_RETRIES} attempts. "
-                                f"Leaving blank — you can re-ingest this source to retry."
+                                f"Leaving blank - you can re-ingest this source to retry."
                             )
                     except Exception as e:
                         logger.error(f"Page {i + 1} attempt {attempt} failed: {e}")
                         if attempt == MAX_RETRIES:
                             logger.error(
                                 f"Page {i + 1} failed all {MAX_RETRIES} attempts. "
-                                f"Leaving blank — you can re-ingest to retry."
+                                f"Leaving blank - you can re-ingest to retry."
                             )
                         break
 
@@ -336,7 +336,7 @@ class PdfIngestor(BaseIngestor):
         the text and Docling is needed solely to locate figures: OCR and table
         structure analysis are both switched off, leaving only layout detection.
         """
-        # Docling is a heavy optional dependency — import lazily so it's only
+        # Docling is a heavy optional dependency - import lazily so it's only
         # loaded when a PDF actually needs it.
         from docling.datamodel.base_models import InputFormat
         from docling.datamodel.pipeline_options import PdfPipelineOptions, RapidOcrOptions
@@ -441,7 +441,7 @@ class PdfIngestor(BaseIngestor):
             if self.job_id and is_cancelled(self.job_id):
                 raise IngestionCancelled(f"Ingestion of '{source_name}' was cancelled")
 
-            # Counts pages that produced content, not the PDF's true page count —
+            # Counts pages that produced content, not the PDF's true page count -
             # sorted_pages is the union of the text and image maps, so a wholly empty
             # page never appears. The total is therefore a lower bound, which is the
             # right way round: the bar can't stall short of 100%.
@@ -499,7 +499,7 @@ class PdfIngestor(BaseIngestor):
                 page_no = picture.prov[0].page_no
 
                 try:
-                    # Requires generate_picture_images=True on the pipeline options —
+                    # Requires generate_picture_images=True on the pipeline options -
                     # otherwise this is None for every picture.
                     image = picture.get_image(doc)
                     if image is None:

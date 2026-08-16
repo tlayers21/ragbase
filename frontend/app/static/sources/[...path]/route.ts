@@ -8,15 +8,15 @@ import path from "node:path";
  *
  * This replaces the `frontend/public/static/sources -> ../../../data/sources`
  * symlink, which could not work for the flow the app actually has. Next.js
- * enumerates `public/` **once, at boot**, when not in dev — see
+ * enumerates `public/` **once, at boot**, when not in dev - see
  * `next/dist/server/lib/router-utils/filesystem.js`: the `recursiveReadDir` that
  * fills `publicFolderItems` is inside `if (!opts.dev)`, matching is
  * `items.has(curItemPath)`, and the live filesystem re-check below it is guarded
  * by `opts.dev`. `scripts/start.sh` runs `next build && next start`, so every
  * source ingested *after* the server came up was missing from that snapshot and
  * 404'd: PDFs fell into react-pdf's error slot, text previews painted a red
- * "Preview unavailable", images broke. The normal sequence — start the app, then
- * ingest something, then preview it — hit that path every single time. It only
+ * "Preview unavailable", images broke. The normal sequence - start the app, then
+ * ingest something, then preview it - hit that path every single time. It only
  * looked verified because testing used files that already existed at boot.
  *
  * A route handler reads the filesystem per request, so it behaves the same in
@@ -63,7 +63,7 @@ export async function GET(
 ): Promise<Response> {
   const { path: segments } = await ctx.params;
 
-  // Segments arrive percent-encoded — source names are slugs but can carry
+  // Segments arrive percent-encoded - source names are slugs but can carry
   // characters that were escaped by encodeURIComponent on the way out.
   let filePath: string;
   try {
@@ -102,7 +102,7 @@ export async function GET(
     "Cache-Control": "no-store",
   };
 
-  // Only the single-range form is handled — that is all pdf.js sends, and a
+  // Only the single-range form is handled - that is all pdf.js sends, and a
   // multipart/byteranges response would need a different body encoding
   // entirely. Anything else falls through to the full-file response, which is
   // always a valid answer to a Range request.

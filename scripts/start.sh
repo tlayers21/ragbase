@@ -129,9 +129,26 @@ echo "Starting frontend..."
 (cd frontend && npm start) &
 FRONTEND_PID=$!
 
-# 5. Wait for frontend to be ready then open browser
+# 5. Wait for both servers to be ready then open browser
 echo "Waiting for frontend to be ready..."
 until curl -s http://localhost:3000 > /dev/null 2>&1; do
+    sleep 1
+done
+
+# Wait for the backend's port too, not just the frontend's. /health answers as soon
+# as uvicorn binds (warmup progress is reported *in* the response, so this doesn't
+# wait for the models). Without it the browser opened while uvicorn was still
+# importing torch, and the app's first backend call - GET /sessions/should_reset,
+# which is how reset_all.sh reaches the browser's chat history - hit a closed port.
+# The frontend retries that call now, so this only narrows the window; a second tab
+# or a reload during warmup still races, and the retry is what actually fixes it.
+#
+# Bounded, like the shutdown wait above: if the backend is broken we still want the
+# browser open, because the UI's warmup gate explains the problem and /settings is
+# where a wrong API URL gets fixed.
+echo "Waiting for backend to be ready..."
+for _ in $(seq 1 60); do
+    curl -s http://localhost:8001/health > /dev/null 2>&1 && break
     sleep 1
 done
 

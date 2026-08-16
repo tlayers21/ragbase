@@ -140,7 +140,7 @@ async def generate_title(text: str = Form(...)):
 async def queue_status():
     """Get current status of all ingestion jobs."""
     # The frontend polls this every 1-3s while anything is active, and it reads a
-    # JSON file guarded by _status_lock — which both queue workers also hold. On
+    # JSON file guarded by _status_lock - which both queue workers also hold. On
     # the event loop, one contended read stalls every in-flight request.
     return {"jobs": await asyncio.to_thread(get_status)}
 
@@ -157,7 +157,7 @@ async def cancel_ingestion(job_id: str):
     """
     Cancel an active job (queued, ingesting, or building_graph).
 
-    Cancellation is cooperative — this only flips the status, and the worker acts
+    Cancellation is cooperative - this only flips the status, and the worker acts
     on it at its next check. Everything the job had already written is then
     removed, so a cancelled source leaves nothing queryable behind.
     """

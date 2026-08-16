@@ -5,7 +5,7 @@ from config.paths import CHROMADB_DIR
 
 logger = setup_logging(__name__)
 
-# Shared embedded ChromaDB client — created once per run, reused everywhere
+# Shared embedded ChromaDB client - created once per run, reused everywhere
 _client = None
 
 

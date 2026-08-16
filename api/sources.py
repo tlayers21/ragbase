@@ -56,7 +56,7 @@ async def get_source_file(source: str, request: Request):
     """
     # 409 while a job is in flight. The original is written by api/ingest.py
     # *before* the job is enqueued, so it is servable from the moment the upload
-    # lands — which meant a source could be previewed while the app considered it
+    # lands - which meant a source could be previewed while the app considered it
     # unfinished and hid it everywhere else. 409, not 404: the file is there.
     job = await asyncio.to_thread(find_active_job, source, USER_ID)
     if job:
@@ -78,7 +78,7 @@ async def get_source_file(source: str, request: Request):
     # This URL is fetched two ways: as a plain <img src> (no Origin header, so
     # CORSMiddleware adds no Access-Control-Allow-Origin) and via fetch() (a CORS
     # request that requires it). Without Vary the browser reuses the cached
-    # non-CORS response for the CORS request, which then fails the origin check —
+    # non-CORS response for the CORS request, which then fails the origin check -
     # surfacing as a bogus "blocked by CORS policy" error on a file that serves
     # fine. Varying on Origin keeps the two cache entries separate.
     headers = {"Vary": "Origin"}

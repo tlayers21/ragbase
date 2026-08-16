@@ -66,7 +66,7 @@ def _extract_batch_embeddings(response) -> list[list[float]]:
 # -- Public API --------------------------------------------------------------
 # The embedding model is query-critical, so every call here renews the long
 # residency set by OLLAMA_KEEP_ALIVE rather than Ollama's 5-minute default.
-# Ingestion embeds too, but it is the *same* model either way — there is no
+# Ingestion embeds too, but it is the *same* model either way - there is no
 # version of this worth letting expire between a warmup and the first question.
 def embed(text: str) -> list[float]:
     """Embed text using the embedding model."""
@@ -108,7 +108,7 @@ def embed_batch(texts: list[str]) -> list[list[float]]:
             return None
 
     # Limit threads so we don't overwhelm the local model
-    max_workers = min(8, max(1, len(texts)))  # cap threads — local Ollama saturates quickly
+    max_workers = min(8, max(1, len(texts)))  # cap threads - local Ollama saturates quickly
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futures = {ex.submit(_single, i, t): i for i, t in enumerate(texts)}
         for fut in as_completed(futures):
@@ -153,7 +153,7 @@ def unload(task: str) -> None:
     following fast-model call doesn't push Ollama over its runner budget and
     evict a query model to make room.
 
-    Raises like any other Ollama call — callers decide whether a failed unload
+    Raises like any other Ollama call - callers decide whether a failed unload
     matters. It never does on shutdown; the finite TTL is the backstop.
     """
     model = get_model(task)
@@ -175,8 +175,8 @@ def restore_query_models() -> None:
     reading is that ingestion evicts a query model by asking for a fourth runner
     (Ollama allows three), so keeping ingestion to one model at a time would fix
     it. Measured on the M3 (2026-08-16), that is not what happens. The ingestion
-    calls are already strictly sequential — `ImageIngestor.extract_text` runs
-    OCR, then vision, then fusion with no concurrency anywhere — and `ollama ps`
+    calls are already strictly sequential - `ImageIngestor.extract_text` runs
+    OCR, then vision, then fusion with no concurrency anywhere - and `ollama ps`
     through an image ingest showed the resident set going:
 
         [bge-m3, qwen3] -> [] -> [qwen2.5vl] -> [bge-m3, qwen2.5vl]
@@ -187,11 +187,11 @@ def restore_query_models() -> None:
     fit beside qwen3 in Ollama's Metal budget on 24GB, so it displaces whatever
     is resident no matter what order the calls are made in. Ordering cannot fix
     a capacity problem, and `keep_alive` never protected against eviction under
-    pressure — only against idle expiry.
+    pressure - only against idle expiry.
 
     What *is* fixable is the state the machine is left in. Pre-fix, a job ended
     with [bge-m3, qwen2.5:3b, qwen2.5vl] resident and the answer model gone, so
-    the next question paid a full cold load — the original "first query is slow"
+    the next question paid a full cold load - the original "first query is slow"
     symptom, reached through ingestion instead of through startup. Unloading the
     ingestion models frees that space, and re-warming moves the reload onto this
     worker thread, where nobody is waiting on it.
@@ -243,12 +243,12 @@ def generate_stream(
 
     `think` is Ollama's thinking toggle for reasoning models like qwen3. Leave it
     None to keep the model's default; pass False to suppress the reasoning pass
-    entirely. Do *not* try to do this by putting `/no_think` in the prompt — that
+    entirely. Do *not* try to do this by putting `/no_think` in the prompt - that
     soft switch is not honored here and the literal text only confuses the model
-    (see §8 of `.ai/instructions.md`).
+    (see section 8 of `.ai/instructions.md`).
 
     `keep_alive` is **opt-in**, unlike `embed()`. Most callers here are
-    ingestion-only tasks (summarize, title, fact_check, …), and pinning those
+    ingestion-only tasks (summarize, title, fact_check, ...), and pinning those
     would spend a runner slot Ollama needs for the query models: the budget is 3,
     embed and the answer model hold two of them, and anything ingestion keeps
     resident competes for the last one. Leaving them on Ollama's 5-minute default
@@ -261,7 +261,7 @@ def generate_stream(
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
-    # Only forward each option when explicitly set — sending think=None or
+    # Only forward each option when explicitly set - sending think=None or
     # keep_alive=None would override the model's own default rather than defer
     # to it.
     kwargs = {} if think is None else {"think": think}

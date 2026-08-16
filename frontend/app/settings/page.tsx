@@ -5,7 +5,7 @@ import Link from "next/link";
 import { ArrowLeft, Save } from "lucide-react";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { useSettings } from "@/hooks/useSettings";
-import { DEFAULT_API_URL } from "@/lib/config";
+import { DEFAULT_API_URL, DEFAULT_RELEVANCE_PERCENT } from "@/lib/config";
 
 export default function SettingsPage() {
   const {
@@ -15,14 +15,20 @@ export default function SettingsPage() {
     setDisplayName,
     telemetryEnabled,
     setTelemetryEnabled,
+    rerankerPercent,
+    setRerankerPercent,
   } = useSettings();
   const [localDisplayName, setLocalDisplayName] = useState(displayName);
   const [localApiUrl, setLocalApiUrl] = useState(apiUrl);
+  // Tracks the drag so the readout moves with the thumb; the commit happens on
+  // release, in setRerankerPercent.
+  const [localRerankerPercent, setLocalRerankerPercent] = useState(rerankerPercent);
   const [saved, setSaved] = useState(false);
 
   // Sync once the backend-fetched values arrive.
   useEffect(() => setLocalDisplayName(displayName), [displayName]);
   useEffect(() => setLocalApiUrl(apiUrl), [apiUrl]);
+  useEffect(() => setLocalRerankerPercent(rerankerPercent), [rerankerPercent]);
 
   function handleSave() {
     setDisplayName(localDisplayName.trim());
@@ -100,8 +106,8 @@ export default function SettingsPage() {
               }`}
             >
               {/* left-0 anchors the knob to the track. Without it the absolute
-                  span falls back to its static position — the button centers its
-                  content — so translate-x pushed the knob off the right edge. */}
+                  span falls back to its static position - the button centers its
+                  content - so translate-x pushed the knob off the right edge. */}
               <span
                 className={`absolute left-0 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
                   telemetryEnabled ? "translate-x-[22px]" : "translate-x-0.5"
@@ -112,6 +118,47 @@ export default function SettingsPage() {
           <p className="text-xs text-foreground-muted mt-2">
             Sends anonymous usage data (query latency, source counts) to help improve
             RAGbase. No queries, documents, or personal data are ever sent.
+          </p>
+        </div>
+
+        {/* Retrieval threshold */}
+        <div className="rounded-xl border border-border bg-surface p-5">
+          <div className="flex items-baseline justify-between gap-4 mb-1">
+            <label htmlFor="relevance-threshold" className="text-sm font-semibold text-foreground">
+              Minimum relevance
+            </label>
+            <span className="text-sm font-mono text-foreground-muted tabular-nums">
+              {localRerankerPercent}%
+            </span>
+          </div>
+          <p className="text-xs text-foreground-muted mb-3">
+            How closely a chunk must match your question before it is cited and sent to the
+            model. Same scale as the “% match” shown on each source.
+          </p>
+          {/* Committed on release, not on every frame: each save rewrites
+              data/settings.json and clears the semantic cache server-side. */}
+          <input
+            id="relevance-threshold"
+            type="range"
+            min={0}
+            max={100}
+            step={1}
+            value={localRerankerPercent}
+            onChange={(e) => setLocalRerankerPercent(Number(e.target.value))}
+            onPointerUp={() => setRerankerPercent(localRerankerPercent)}
+            onKeyUp={() => setRerankerPercent(localRerankerPercent)}
+            className="w-full accent-primary cursor-pointer"
+          />
+          <p className="text-xs text-foreground-muted/80 mt-3 leading-relaxed">
+            <span className="font-medium text-foreground-muted">
+              Recommended: {DEFAULT_RELEVANCE_PERCENT}%
+            </span>{" "}
+            — a deliberately conservative floor, so low-confidence chunks are never fed to
+            the model. Much lower and it cited passages the reranker scored at a fraction of
+            a percent; at the model’s own boundary (56%) too many questions fell through to
+            answering with no citations at all. Raise it to cite only strong matches; 0%
+            passes through everything retrieval returned. Applies to your next question — no
+            restart needed.
           </p>
         </div>
 

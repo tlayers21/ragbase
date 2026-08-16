@@ -23,7 +23,7 @@ def parse_verdict(raw: str, default_verdict: str, default_reason: str) -> tuple[
 def update_chunk_metadata(source: str, chunk_index: int, updates: dict, user_id: str) -> None:
     """
     Merge analysis-result fields into one chunk's ChromaDB metadata,
-    located by (source, chunk_index). Failures are logged, never raised —
+    located by (source, chunk_index). Failures are logged, never raised -
     a metadata write must not abort a whole analysis run.
     """
     try:

@@ -30,9 +30,9 @@ _ACTIVE_STATUSES = {"queued", "ingesting", "building_graph"}
 # Every status update is a read-modify-write of one shared JSON file, performed by
 # the ingestion worker and API request threads concurrently. Two problems follow,
 # and this lock is what prevents both:
-#   1. Lost updates — two threads load the same list, each edits one job, and the
+#   1. Lost updates - two threads load the same list, each edits one job, and the
 #      second write discards the first thread's edit.
-#   2. A crash — every writer used to build the same "queue_status.json.tmp" path,
+#   2. A crash - every writer used to build the same "queue_status.json.tmp" path,
 #      so whichever called os.replace() second hit FileNotFoundError and blew up
 #      its caller, leaving the status file empty and the UI showing no jobs at all.
 #      That was found when ingestion and graph builds ran on two separate workers;
@@ -176,8 +176,8 @@ def _requeue_recovered_jobs() -> int:
 
 # -- Worker ----------------------------------------------------------------
 def _worker():
-    """Background thread that runs each job end to end — extraction through the
-    knowledge graph — one job at a time."""
+    """Background thread that runs each job end to end - extraction through the
+    knowledge graph - one job at a time."""
     while True:
         job = _queue.get()
         if job is None:
@@ -272,7 +272,7 @@ def _worker():
                 except OSError as e:
                     logger.warning(f"Could not remove temp file for '{source}': {e}")
 
-            # The job is completely over — extraction and graph build both — so
+            # The job is completely over - extraction and graph build both - so
             # hand the GPU back to queries. An ingest that touched the vision
             # model leaves it resident holding 7.3GB, with the answer model
             # evicted to make room, so without this the next question pays a
@@ -316,7 +316,7 @@ def enqueue(
     Add a file to the ingestion queue. Saves file to a temp location
     and returns the job ID. The worker processes it in the background.
 
-    `describe_images` only affects PDFs — it turns on the opt-in Docling + VLM
+    `describe_images` only affects PDFs - it turns on the opt-in Docling + VLM
     figure-description pass (see PdfIngestor).
     """
     suffix = Path(filename).suffix.lower()
@@ -451,7 +451,7 @@ def find_active_job(source: str, user_id: str) -> dict | None:
     """
     Return the active job for a source, or None.
 
-    Public counterpart to `_find_active_job` for callers outside this module —
+    Public counterpart to `_find_active_job` for callers outside this module -
     `api/documents.py` uses it to stop an in-flight ingestion or graph build
     before deleting the source out from under it.
     """
@@ -465,7 +465,7 @@ def active_sources(user_id: str) -> set[str]:
 
     The queue status file is the authority on "is this source finished". A job
     stores its chunks in ChromaDB minutes before the graph build that completes
-    it, so retrieval has to exclude these explicitly — otherwise a document the
+    it, so retrieval has to exclude these explicitly - otherwise a document the
     UI is still showing as in-progress can answer a question with a partial
     graph behind it. Read once per query in `search_candidates()`.
     """

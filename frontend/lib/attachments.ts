@@ -17,7 +17,7 @@ export function classifyFile(file: File): AttachmentType | null {
 
 const PREVIEW_MAX_CHARS = 140;
 
-// First two non-blank lines, additionally capped by character count — pasted
+// First two non-blank lines, additionally capped by character count - pasted
 // text is often a single unbroken paragraph with no newlines at all, so the
 // line-count cap alone isn't enough to keep the attachment card small.
 export function twoLinePreview(text: string): string {
@@ -29,7 +29,7 @@ export function twoLinePreview(text: string): string {
   return lines.length > PREVIEW_MAX_CHARS ? `${lines.slice(0, PREVIEW_MAX_CHARS)}…` : lines;
 }
 
-// Best-effort page count for a PDF attachment card — dynamically imported so
+// Best-effort page count for a PDF attachment card - dynamically imported so
 // pdf.js (large) never inflates the main chat bundle for users who never attach
 // a PDF. Returns undefined on any failure ("if available" per spec).
 export async function getPdfPageCount(file: File): Promise<number | undefined> {

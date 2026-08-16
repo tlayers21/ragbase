@@ -71,7 +71,7 @@ def _strip_latex(text: str) -> str:
     """Remove LaTeX math expressions before entity extraction. Also strips
     chunks that are mostly garbled math notation, since malformed LaTeX
     can break JSON generation regardless of escaping.
-    NOTE: brace/backslash stripping is lossy — also affects code snippets
+    NOTE: brace/backslash stripping is lossy - also affects code snippets
     and JSON strings embedded in text. Acceptable tradeoff for now."""
     text = re.sub(r"\$[^$]{0,500}\$", "[math expression]", text)
     text = re.sub(r"\\[a-zA-Z]+", "", text)
@@ -228,7 +228,7 @@ def _yield_to_queries(source: str) -> None:
     process a query needs, so a build running through a large document visibly
     slows every query the user makes in the meantime. Sleeping between chunks
     hands the CPU (and Ollama's queue) to the request someone is actually waiting
-    on, at the cost of a build that finishes a little later — the graph is a
+    on, at the cost of a build that finishes a little later - the graph is a
     recall improvement, not something the UI blocks on.
 
     Capped at GRAPH_YIELD_MAX_SECONDS so a flag left set by a crashed request
@@ -244,7 +244,7 @@ def _yield_to_queries(source: str) -> None:
 
     if waited >= GRAPH_YIELD_MAX_SECONDS:
         logger.warning(
-            f"Graph build for '{source}' waited {waited:.1f}s on an active query — resuming anyway"
+            f"Graph build for '{source}' waited {waited:.1f}s on an active query - resuming anyway"
         )
     else:
         logger.debug(f"Graph build for '{source}' yielded {waited:.1f}s to an active query")
@@ -308,7 +308,7 @@ def build_from_chunks(
 
             for entity in extracted.get("entities", []):
                 try:
-                    # INSERT OR IGNORE gives no signal on its own — compare
+                    # INSERT OR IGNORE gives no signal on its own - compare
                     # total_changes to count only rows actually inserted
                     changes_before = conn.total_changes
                     conn.execute(
@@ -341,12 +341,12 @@ def build_from_chunks(
 
             # Commit per chunk, not once after the loop. SQLite allows exactly
             # one writer, and a deferred transaction stays open from the first
-            # INSERT until the commit — batched across every chunk, that meant
+            # INSERT until the commit - batched across every chunk, that meant
             # this worker held the write lock for the entire build (~20 min on a
             # 140-chunk source), including through _yield_to_queries' sleeps.
             # Any other writer, in practice delete_source(), then waited out its
             # timeout=30 and raised "database is locked", so deleting a source
-            # mid-build returned a 500 and left it half-deleted — the Chroma
+            # mid-build returned a 500 and left it half-deleted - the Chroma
             # chunks are removed first, so the source vanished from the UI while
             # its graph rows survived. Committing here caps the lock at one
             # chunk's inserts and makes the build durable incrementally rather

@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { ThemeProvider, useTheme } from "next-themes";
 
-// The theme is only ever "light" or "dark" — there is no System option in the UI.
+// The theme is only ever "light" or "dark" - there is no System option in the UI.
 // On first load (nothing in localStorage) the OS preference decides which one to
 // start on, and that choice is written to localStorage immediately so every later
 // load is an explicit user setting rather than a live follow of the OS.

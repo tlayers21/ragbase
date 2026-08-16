@@ -19,7 +19,7 @@ def search(
     Hybrid search combining BM25 keyword search and vector search
     via Reciprocal Rank Fusion (RRF).
 
-    Sources with an in-flight ingestion job are excluded — see `_exclude_clause`.
+    Sources with an in-flight ingestion job are excluded - see `_exclude_clause`.
 
     Returns (docs, metadatas) - the top n_results chunks.
     """
@@ -48,7 +48,7 @@ def search(
     if not docs:
         return [], []
 
-    # BM25 runs over the vector candidates only (not the full corpus) — cheap
+    # BM25 runs over the vector candidates only (not the full corpus) - cheap
     # keyword re-scoring of an already-relevant pool
     tokenized = [doc.lower().split() for doc in docs]
     bm25 = BM25Okapi(tokenized)
@@ -78,7 +78,7 @@ def search_summaries(
     n_results scales dynamically with collection size: min(max(3, total//3), 8).
     Results with cosine distance > 0.7 are filtered out as irrelevant;
     if all results exceed the threshold, returns the unfiltered list as a fallback.
-    Sources with an in-flight ingestion job are excluded — a summary is written
+    Sources with an in-flight ingestion job are excluded - a summary is written
     before the graph build, so without this Stage 1 would nominate a document
     that isn't finished, and the unfiltered fallback would do it unconditionally.
 
@@ -113,7 +113,7 @@ def search_summaries(
         filtered = [meta["source"] for meta in metadatas]
         logger.debug(
             f"Stage 1: all {len(metadatas)} results exceeded distance threshold "
-            f"{SUMMARY_DISTANCE_THRESHOLD} — using unfiltered fallback"
+            f"{SUMMARY_DISTANCE_THRESHOLD} - using unfiltered fallback"
         )
 
     logger.debug(f"Stage 1 retrieved {len(filtered)} relevant sources: {filtered}")
@@ -129,7 +129,7 @@ def _exclude_clause(excluded: set[str] | None) -> dict | None:
     building its knowledge graph, so between those points the source is
     physically searchable while the app considers it unfinished. The frontend
     already keeps it out of the source picker; this is what makes that a real
-    guarantee rather than a UI convention — without it an unfiltered question
+    guarantee rather than a UI convention - without it an unfiltered question
     still retrieves from a half-built document.
 
     Returns None when nothing is in flight, which is the overwhelmingly common

@@ -28,7 +28,7 @@ class YoutubeIngestor(BaseIngestor):
 
     def extract_text(self, source_path: str | Path, source_name: str) -> str:
         """
-        source_path here is actually the URL — we reuse the same interface
+        source_path here is actually the URL - we reuse the same interface
         as other ingestors but treat the path as a URL string.
         """
         url = str(source_path)
@@ -62,7 +62,7 @@ class YoutubeIngestor(BaseIngestor):
         Download audio only from a video URL using yt-dlp.
         Returns the path to the downloaded audio file.
         """
-        # yt-dlp is a heavy optional dependency — import lazily so it's only
+        # yt-dlp is a heavy optional dependency - import lazily so it's only
         # loaded when a YouTube/video URL is actually being ingested.
         import yt_dlp
 

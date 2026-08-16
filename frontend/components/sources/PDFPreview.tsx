@@ -3,7 +3,7 @@
 import { Document, Page } from "react-pdf";
 import { Loader2 } from "lucide-react";
 // Imported for its side effect: sets pdf.js's worker to the local copy. See
-// lib/pdf.ts — this used to be a jsDelivr URL assigned here at module scope,
+// lib/pdf.ts - this used to be a jsDelivr URL assigned here at module scope,
 // which broke offline and fought PDFThumbnail over the same global.
 import "@/lib/pdf";
 
@@ -18,7 +18,7 @@ export default function PDFPreview({ url }: PDFPreviewProps) {
     <div className="flex justify-center py-2">
       {/* No `options` prop on purpose: react-pdf treats a new options identity as a
           new document, so an inline object here is an infinite reload loop. The only
-          entry it ever held was the vendored cMap path, dropped with public/cmaps —
+          entry it ever held was the vendored cMap path, dropped with public/cmaps -
           the corpus is English-only and cMaps are consulted solely for non-Latin
           embedded font encodings. */}
       <Document
