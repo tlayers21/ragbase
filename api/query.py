@@ -17,10 +17,12 @@ from config.runtime import USER_ID, query_finished, query_started
 from config.settings import (
     ANSWER_THINKING_ENABLED,
     ATTACHMENT_TEXT_MAX_CHARS,
+    OLLAMA_KEEP_ALIVE,
     SUPPORTED_IMAGE_EXTENSIONS,
     SUPPORTED_PDF_EXTENSIONS,
 )
 from ingestion.helpers import describe_image
+from ingestion.queue import active_sources
 from retrieval.embed import embed
 from retrieval.graph import has_graph
 from retrieval.pipeline import (
@@ -59,12 +61,19 @@ def _answer_stream(prompt: str) -> Generator[str, None, None]:
     `system=_SYSTEM_PROMPT, model=get_model("answer")`; funnelling them through
     here means the thinking toggle can't be applied to five of them and forgotten
     on the sixth.
+
+    This is also the only place the answer model's long residency is renewed.
+    `generate_stream` leaves `keep_alive` unset by default because most of its
+    callers are ingestion-only tasks that should hand their runner slot back;
+    the answer model is the one that must still be resident when the user asks
+    their next question, however long they took to ask it.
     """
     return generate_stream(
         prompt,
         system=_SYSTEM_PROMPT,
         model=get_model("answer"),
         think=ANSWER_THINKING_ENABLED,
+        keep_alive=OLLAMA_KEEP_ALIVE,
     )
 
 
@@ -104,6 +113,22 @@ def _sse_token(token: str) -> str:
     return f"data: {json.dumps(token)}\n\n"
 
 
+def _sse_timing(t0: float) -> str:
+    """Frame the server's own elapsed time as the final control event before [DONE].
+
+    Sent as elapsed milliseconds rather than a timestamp on purpose: the browser
+    would otherwise have to subtract a server clock from its own, and the two are
+    independent. Each side measures a delta against its own monotonic clock and the
+    frontend simply adds them, so skew never enters the number.
+
+    A separate frame rather than a payload on [DONE], because [DONE] is matched
+    exactly (``payload === "[DONE]"``) by the frontend parser and documented as a
+    bare marker in .ai/instructions.md §5.
+    """
+    elapsed_ms = round((time.perf_counter() - t0) * 1000)
+    return f"data: [TIMING]{json.dumps({'server_ms': elapsed_ms})}\n\n"
+
+
 async def _with_query_priority(
     stream: AsyncGenerator[str, None],
 ) -> AsyncGenerator[str, None]:
@@ -126,6 +151,45 @@ async def _with_query_priority(
         query_finished()
 
 
+def _fresh_cached_response(query_embedding: list[float]) -> dict | None:
+    """A cached retrieval, unless it draws on a source that is mid-ingest.
+
+    The exclusion filter that keeps unfinished sources out of an answer lives in
+    `search_candidates()`, and a cache hit skips that entirely — so the cache was
+    the one path by which an in-flight source could still reach an answer.
+
+    Re-ingestion is where this bites. `ingest()` calls `delete_source()` (and so
+    `clear_cache()`) only *after* `extract_text()` returns, which on a large PDF
+    is minutes. For that whole window the job is active, the source's old chunks
+    are still in ChromaDB, and any cached entry naming it kept being served —
+    answering from the version of the document the user was replacing.
+
+    Dropping the entry rather than filtering its chunks is deliberate: the cached
+    `context` is an already-formatted string, so there is no honest way to remove
+    one source's contribution from it. A miss just runs the real pipeline, which
+    applies the exclusion properly.
+    """
+    cached = get_cached_response(USER_ID, query_embedding)
+    if not cached:
+        return None
+
+    # An entry with no context is a cached failure, not a cached answer: reranking
+    # dropped everything, and serving it replays that miss for the whole TTL even
+    # after the source it needed finishes ingesting. Keyed on `context` rather than
+    # `chunks` on purpose — entries written before chunks were stored have no
+    # `chunks` key but a perfectly good context, and must still be served.
+    if not cached.get("context"):
+        logger.info("Discarding cached retrieval — empty context, retrieval returned nothing")
+        return None
+
+    in_flight = active_sources(USER_ID)
+    stale = in_flight.intersection(cached.get("sources", []))
+    if stale:
+        logger.info(f"Discarding cached retrieval — sources still ingesting: {sorted(stale)}")
+        return None
+    return cached
+
+
 class QueryRequest(BaseModel):
     question: str
     history: list[dict] = []
@@ -145,18 +209,18 @@ async def query(req: QueryRequest):
     Checks the semantic cache first; on a hit, reuses retrieved chunks but
     regenerates a fresh answer against the new question.
     """
-    t0 = time.time()
+    t0 = time.perf_counter()
     logger.info(f"Query: {req.question}")
 
     query_embedding = embed(req.question)
-    cached = get_cached_response(USER_ID, query_embedding)
+    cached = _fresh_cached_response(query_embedding)
 
     if cached:
         # Cache hit: reuse retrieved context, generate a fresh answer for the new question.
         history_str = format_history(req.history)
         prompt = build_answer_prompt(req.question, cached["context"], history_str)
         answer = "".join(_answer_stream(prompt))
-        latency = time.time() - t0
+        latency = time.perf_counter() - t0
         logger.info(f"Cache hit — response in {latency:.2f}s")
         send_telemetry(
             "query_rag",
@@ -174,17 +238,21 @@ async def query(req: QueryRequest):
     prompt = build_answer_prompt(req.question, retrieval["context"], retrieval["history_str"])
     answer = "".join(_answer_stream(prompt))
 
-    set_cached_response(
-        USER_ID,
-        query_embedding,
-        {
-            "context": retrieval["context"],
-            "sources": retrieval["sources"],
-            "scores": retrieval["scores"],
-        },
-    )
+    # Same empty-retrieval guard as the streaming path. Unreachable today — the
+    # frontend only calls /query/stream — so this is insurance for whenever this
+    # endpoint gets a caller again, not a live fix.
+    if retrieval["context"]:
+        set_cached_response(
+            USER_ID,
+            query_embedding,
+            {
+                "context": retrieval["context"],
+                "sources": retrieval["sources"],
+                "scores": retrieval["scores"],
+            },
+        )
 
-    latency = time.time() - t0
+    latency = time.perf_counter() - t0
     logger.info(f"Query latency: {latency:.2f}s")
     send_telemetry(
         "query_rag",
@@ -208,10 +276,11 @@ async def query_stream(req: QueryRequest, request: Request) -> StreamingResponse
     Server-Sent Events. `data: [STAGE]{"stage": ...}\\n\\n` events mark
     retrieval/reranking/generation as they begin, followed by token events
     (`data: {json-encoded token}\\n\\n`), a `data: [SOURCES]{json}\\n\\n` citation event,
-    and `data: [DONE]\\n\\n`. `data: [HEARTBEAT]\\n\\n` keep-alive events are
-    emitted before each blocking call so the connection does not time out.
+    a `data: [TIMING]{"server_ms": int}\\n\\n` event carrying this request's own
+    elapsed time, and `data: [DONE]\\n\\n`. `data: [HEARTBEAT]\\n\\n` keep-alive events
+    are emitted before each blocking call so the connection does not time out.
     """
-    t0 = time.time()
+    t0 = time.perf_counter()
     logger.info(f"Streaming query: {req.question}")
 
     async def event_stream() -> AsyncGenerator[str, None]:
@@ -228,7 +297,7 @@ async def query_stream(req: QueryRequest, request: Request) -> StreamingResponse
         cached = None
         if not req.source_filter:
             query_embedding = await asyncio.to_thread(embed, req.question)
-            cached = await asyncio.to_thread(get_cached_response, USER_ID, query_embedding)
+            cached = await asyncio.to_thread(_fresh_cached_response, query_embedding)
 
         if cached:
             context = cached["context"]
@@ -259,7 +328,10 @@ async def query_stream(req: QueryRequest, request: Request) -> StreamingResponse
                 for doc, meta, score in zip(docs, metas, scores)
             ]
 
-            if not req.source_filter:
+            # Don't cache a retrieval that found nothing — see _fresh_cached_response.
+            # Re-running the pipeline next time costs a few seconds; caching the miss
+            # costs every similar question for CACHE_TTL.
+            if not req.source_filter and chunks:
                 await asyncio.to_thread(
                     set_cached_response,
                     USER_ID,
@@ -277,7 +349,6 @@ async def query_stream(req: QueryRequest, request: Request) -> StreamingResponse
         if await request.is_disconnected():
             return
 
-        logger.info("Emitting [STAGE] generating")
         yield f"data: [STAGE]{json.dumps({'stage': 'generating'})}\n\n"
         async for token in _aiter_answer(prompt):
             if token:
@@ -285,9 +356,10 @@ async def query_stream(req: QueryRequest, request: Request) -> StreamingResponse
 
         sources_payload = json.dumps({"sources": sources, "scores": scores, "chunks": chunks})
         yield f"data: [SOURCES]{sources_payload}\n\n"
+        yield _sse_timing(t0)
         yield "data: [DONE]\n\n"
 
-        latency = time.time() - t0
+        latency = time.perf_counter() - t0
         logger.info(f"Streaming query latency: {latency:.2f}s (cache_hit={bool(cached)})")
         send_telemetry(
             "query_rag",
@@ -308,9 +380,10 @@ async def query_direct(req: QueryRequest) -> StreamingResponse:
     queries. Sends the question straight to generate_stream() with qwen3.
     Used when the user has deselected all sources ("direct LLM mode"), so
     the response feels near-instant compared to the full pipeline. Same SSE
-    event format as /query/stream (no [STAGE] events, empty [SOURCES]).
+    event format as /query/stream: it emits a single `generating` [STAGE] event
+    (there are no retrieval stages to report) and an empty [SOURCES].
     """
-    t0 = time.time()
+    t0 = time.perf_counter()
     logger.info(f"Direct query (no RAG): {req.question}")
 
     def event_stream() -> Generator[str, None, None]:
@@ -323,9 +396,10 @@ async def query_direct(req: QueryRequest) -> StreamingResponse:
                 yield _sse_token(token)
 
         yield f"data: [SOURCES]{json.dumps({'sources': [], 'scores': []})}\n\n"
+        yield _sse_timing(t0)
         yield "data: [DONE]\n\n"
 
-        latency = time.time() - t0
+        latency = time.perf_counter() - t0
         logger.info(f"Direct query latency: {latency:.2f}s")
         send_telemetry(
             "query_direct",
@@ -420,7 +494,7 @@ async def query_with_attachments(
     question before retrieval/generation. They are never stored as a retrievable
     source — this is inline context for this conversation only, not ingestion.
     """
-    t0 = time.time()
+    t0 = time.perf_counter()
     history_list = json.loads(history) if history else []
     filter_list = json.loads(source_filter) if source_filter else None
     direct = is_direct.strip().lower() == "true"
@@ -508,9 +582,10 @@ async def query_with_attachments(
                 )
                 yield f"data: [SOURCES]{sources_payload}\n\n"
 
+            yield _sse_timing(t0)
             yield "data: [DONE]\n\n"
 
-            latency = time.time() - t0
+            latency = time.perf_counter() - t0
             logger.info(f"Attachment query latency: {latency:.2f}s")
             send_telemetry(
                 "query_attachments",

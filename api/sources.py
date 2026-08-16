@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse, Response
 from config.logging import setup_logging
 from config.paths import SOURCES_DIR
 from config.runtime import USER_ID
+from ingestion.queue import find_active_job
 
 logger = setup_logging(__name__)
 router = APIRouter(prefix="/sources", tags=["sources"])
@@ -53,6 +54,17 @@ async def get_source_file(source: str, request: Request):
     previews and PDF rendering; this endpoint stays as the fallback for clients
     that can't reach the static mount and as the authority on content type.
     """
+    # 409 while a job is in flight. The original is written by api/ingest.py
+    # *before* the job is enqueued, so it is servable from the moment the upload
+    # lands — which meant a source could be previewed while the app considered it
+    # unfinished and hid it everywhere else. 409, not 404: the file is there.
+    job = await asyncio.to_thread(find_active_job, source, USER_ID)
+    if job:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Source '{source}' is still being ingested ({job.get('status')})",
+        )
+
     located = await asyncio.to_thread(_locate_source_file, source)
     if located is None:
         raise HTTPException(status_code=404, detail=f"No file stored for source '{source}'")

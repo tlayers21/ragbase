@@ -12,7 +12,23 @@ CHUNK_SIZE = 512
 CHUNK_OVERLAP = 50
 TOP_K_CANDIDATES = 20
 MAX_FINAL_RESULTS = 5
-RERANKER_MIN_SCORE = -8.0
+# Absolute relevance floor, in raw BGE-reranker logits. It was -8.0, which admitted
+# chunks the cross-encoder rates at ~0.1% relevance — the frontend's linear display
+# map (lib/utils.ts::relevancePercent) renders -8.0 as "11% match", so the floor sat
+# below anything the UI could even show, and those chunks went into the prompt as
+# well as the sources panel.
+#
+# 0.0 is the model's own relevant/not-relevant boundary (sigmoid(0) = 0.5), but it
+# sent too many questions down the empty-context path, where the LLM answers from
+# its own knowledge with zero citations (see .ai/decisions.md). -2.0 (44% displayed)
+# is the deliberate step back from that boundary: still well above the old floor,
+# but tolerant of chunks the cross-encoder rates as borderline.
+RERANKER_MIN_SCORE = -2.0
+# Relative cutoff, applied alongside the floor: drop any chunk more than this many
+# logits below the best-scoring chunk in the same result set. Catches the "one
+# strong hit plus four weak stragglers" case, where every chunk clears the floor
+# but only the leader is actually on topic.
+RERANKER_MAX_SCORE_GAP = 5.0
 SUMMARY_DISTANCE_THRESHOLD = 0.7  # Stage 1 cosine distance cutoff — above this, source is off-topic
 CACHE_TTL = 86400  # 24 hours in seconds
 CACHE_SIMILARITY_THRESHOLD = 0.85
@@ -25,16 +41,54 @@ RRF_K = 60
 # putting "/no_think" in the prompt is ignored (see §8 of .ai/instructions.md).
 ANSWER_THINKING_ENABLED = False
 
+# -- Ollama residency ----------------------------------------------------------
+# How long Ollama keeps a *query-critical* model resident after its last use.
+# Ollama's own default is 5 minutes, which is shorter than the gap between
+# launching the app and asking the first question: warmup finished, the models
+# expired, and the first query paid the full multi-GB load inside the request —
+# the "first query is slow" bug this replaces.
+#
+# Deliberately a finite ceiling rather than -1 ("forever"). main.py unloads these
+# on shutdown, but that hook only runs for SIGINT/SIGTERM: closing the terminal
+# window sends SIGHUP, scripts/start.sh opens by SIGKILLing whatever holds the
+# port, and Force Quit/power loss skip it too. A finite TTL self-heals in every
+# one of those cases with no reliance on signal handling at all.
+#
+# Applied at the query-critical call sites only (embed, and the answer model via
+# api/query.py::_answer_stream). Ingestion-only models keep Ollama's default TTL
+# on purpose — see WARMUP_BACKGROUND_TASKS below for the slot arithmetic.
+OLLAMA_KEEP_ALIVE = "3h"
+
 # -- Startup warmup ------------------------------------------------------------
 # Models are loaded on startup so the first real request doesn't pay the cold
 # start. Warmup runs in the background, but until it finishes it is competing for
 # the same GPU as anything the user does, so the UI blocks on it (GET /health
 # reports the progress). Only the critical group gates the UI — it is what a
 # *query* touches, and it is kept short so the app becomes usable quickly.
-# The background group is ingestion-only and keeps loading after the gate lifts.
 # "reranker" is not an Ollama task key; main.py special-cases it.
 WARMUP_CRITICAL_TASKS = ("embed", "answer", "reranker")
-WARMUP_BACKGROUND_TASKS = ("summarize", "vision_simple")
+# Empty on purpose — keep the constant, not the contents.
+#
+# Ollama holds at most OLLAMA_MAX_LOADED_MODELS runners (3 per GPU by default),
+# and warming summarize + qwen2.5vl on top of embed + answer asked for four. The
+# measured result on an M3 (2026-08-16, pre-fix): the gate lifted with qwen3 and
+# bge-m3 resident, and 8 seconds later — while the background group pulled
+# qwen2.5vl onto the GPU — `ollama ps` listed qwen2.5vl and nothing else. Both
+# query-critical models were evicted at exactly the moment the UI told the user
+# it was ready.
+#
+# summarize and qwen2.5vl are ingestion-only: nothing on the query path touches
+# them, and an ingestion job is already seconds of work, so paying their load on
+# demand costs nothing a user notices. Loading them on demand under the default
+# 5-minute TTL also means they *release* their slot afterwards, which is what
+# keeps total demand inside the budget (2 pinned + 1 ingestion = 3).
+WARMUP_BACKGROUND_TASKS = ()
+# Per-step ceiling on warmup. The frontend's gate has no "continue anyway" escape,
+# so a step that never returns would lock the UI shut forever — marking a step
+# finished in a `finally` only covers a step that *raises*, not one that hangs
+# (Ollama accepting the connection and going quiet, say). Generous rather than
+# tight: a first-ever load pulls several GB off disk.
+WARMUP_TASK_TIMEOUT_SECONDS = 300
 
 # -- Graph build / query contention --------------------------------------------
 # A graph build is one LLM call per chunk against the same local Ollama process a
@@ -44,6 +98,13 @@ WARMUP_BACKGROUND_TASKS = ("summarize", "vision_simple")
 # never stall a build indefinitely.
 GRAPH_YIELD_SLEEP_SECONDS = 0.1
 GRAPH_YIELD_MAX_SECONDS = 60.0
+
+# Rough per-chunk cost of the graph build, used only to drive the progress bar's
+# second half (the job's estimated_seconds is rewritten with chunk_count * this
+# when the graph phase starts). Derived from a measured ~20 minute build over 140
+# chunks, yield-to-query pauses included. A bad estimate only means the bar runs
+# ahead or falls behind and shimmers — it never affects the build itself.
+GRAPH_SECONDS_PER_CHUNK = 8
 
 # -- Ingestion -----------------------------------------------------------------
 VISION_TIMEOUT_SECONDS = 180

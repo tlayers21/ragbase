@@ -7,7 +7,7 @@ import {
   streamDirectQuery,
   streamAttachmentQuery,
   generateChatTitle,
-  shouldResetSessions,
+  fetchResetToken,
   compactMessages,
   type AttachmentPayload,
 } from "@/lib/api";
@@ -39,6 +39,9 @@ function toAttachmentPayloads(attachments: PendingAttachment[]): AttachmentPaylo
 }
 
 const STORAGE_KEY = "ragbase_sessions";
+// The reset_all.sh timestamp this browser has already acted on. Kept separate from
+// STORAGE_KEY so clearing the history doesn't also forget that it was cleared.
+const RESET_TOKEN_KEY = "ragbase_last_reset_at";
 
 function loadSessions(): ChatSession[] {
   try {
@@ -77,9 +80,16 @@ export function useChat(isIngestionBusy?: () => boolean) {
   }, [isIngestionBusy]);
 
   useEffect(() => {
-    shouldResetSessions().then((reset) => {
-      if (reset) {
+    fetchResetToken().then((resetAt) => {
+      // Clear only when the backend reports a reset *newer* than the one this
+      // browser last handled. Comparing tokens rather than consuming a one-shot
+      // flag is what makes a reset reach a second tab or a second browser at all,
+      // and makes a failed call (backend still warming) defer the clear to the
+      // next load rather than swallow it.
+      const seen = Number(localStorage.getItem(RESET_TOKEN_KEY) ?? 0);
+      if (resetAt !== null && resetAt > seen) {
         localStorage.removeItem(STORAGE_KEY);
+        localStorage.setItem(RESET_TOKEN_KEY, String(resetAt));
       }
       const stored = loadSessions();
       setSessions(stored);
@@ -280,7 +290,11 @@ export function useChat(isIngestionBusy?: () => boolean) {
       let assistantSources: string[] = [];
       let assistantScores: number[] = [];
       let assistantChunks: CitedChunk[] = [];
-      let firstTokenTime: number | null = null;
+      let sawFirstToken = false;
+      // Half of the end-to-end latency: the server's own elapsed time, delivered in
+      // the [TIMING] frame. The other half is measured from [DONE] to final paint,
+      // below. Two deltas, two clocks, never subtracted from each other.
+      let serverMs: number | null = null;
       // Sampled here and again at [DONE]: a job that starts or drains mid-stream
       // still shared the GPU with this answer, and either end alone would miss it.
       let ingestionActive = isIngestionBusyRef.current?.() ?? false;
@@ -300,8 +314,8 @@ export function useChat(isIngestionBusy?: () => boolean) {
           );
         },
         onToken: (token: string) => {
-          if (firstTokenTime === null) {
-            firstTokenTime = Date.now();
+          if (!sawFirstToken) {
+            sawFirstToken = true;
             setIsStreaming(true);
           }
           assistantContent += token;
@@ -347,9 +361,11 @@ export function useChat(isIngestionBusy?: () => boolean) {
             })
           );
         },
+        onTiming: (ms: number) => {
+          serverMs = ms;
+        },
         onDone: () => {
-          const latencyMs =
-            firstTokenTime !== null ? Date.now() - firstTokenTime : undefined;
+          const doneAt = performance.now();
           ingestionActive = ingestionActive || (isIngestionBusyRef.current?.() ?? false);
           setSessions((prev) => {
             const next = prev.map((s) => {
@@ -366,7 +382,6 @@ export function useChat(isIngestionBusy?: () => boolean) {
                         chunks: assistantChunks,
                         mode,
                         stage: undefined,
-                        latencyMs,
                         ingestionActive,
                         isComplete: true,
                       }
@@ -377,6 +392,37 @@ export function useChat(isIngestionBusy?: () => boolean) {
             });
             saveSessions(next);
             return next;
+          });
+
+          // The commit triggered above is where the real cost lives: React renders
+          // the whole transcript, re-parses the full answer through
+          // markdown + KaTeX, and writes every session to localStorage — all of it
+          // *after* [DONE] was parsed. Reading the clock here would miss all of it,
+          // which is the undercount this replaces.
+          //
+          // Two nested rAFs, not one: the first fires before the browser paints the
+          // pending commit, the second only after that paint has happened.
+          if (serverMs === null) return;
+          const settledServerMs = serverMs;
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              const latencyMs = Math.round(
+                settledServerMs + (performance.now() - doneAt)
+              );
+              setSessions((prev) => {
+                const next = prev.map((s) => {
+                  if (s.id !== sessionId) return s;
+                  return {
+                    ...s,
+                    messages: s.messages.map((m) =>
+                      m.id === assistantId ? { ...m, latencyMs } : m
+                    ),
+                  };
+                });
+                saveSessions(next);
+                return next;
+              });
+            });
           });
         },
       };

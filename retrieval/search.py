@@ -2,6 +2,7 @@ from rank_bm25 import BM25Okapi
 
 from config.logging import setup_logging
 from config.settings import MAX_FINAL_RESULTS, RRF_K, SUMMARY_DISTANCE_THRESHOLD, TOP_K_CANDIDATES
+from ingestion.queue import active_sources
 from retrieval.embed import embed
 from utils.chromadb_client import get_collection, get_summary_collection
 
@@ -18,13 +19,15 @@ def search(
     Hybrid search combining BM25 keyword search and vector search
     via Reciprocal Rank Fusion (RRF).
 
+    Sources with an in-flight ingestion job are excluded — see `_exclude_clause`.
+
     Returns (docs, metadatas) - the top n_results chunks.
     """
     collection = get_collection(user_id)
     query_embedding = embed(query)
 
     # Build where filter
-    where = _build_filter(user_id, source_filter)
+    where = _build_filter(user_id, source_filter, active_sources(user_id))
 
     # Fetch more candidates than needed for reranking
     fetch_n = min(TOP_K_CANDIDATES, collection.count())  # Chroma errors if n > collection size
@@ -75,6 +78,9 @@ def search_summaries(
     n_results scales dynamically with collection size: min(max(3, total//3), 8).
     Results with cosine distance > 0.7 are filtered out as irrelevant;
     if all results exceed the threshold, returns the unfiltered list as a fallback.
+    Sources with an in-flight ingestion job are excluded — a summary is written
+    before the graph build, so without this Stage 1 would nominate a document
+    that isn't finished, and the unfiltered fallback would do it unconditionally.
 
     Returns a list of relevant source names.
     """
@@ -90,6 +96,7 @@ def search_summaries(
     results = collection.query(
         query_embeddings=[query_embedding],
         n_results=min(n_results, total_sources),
+        where=_exclude_clause(active_sources(user_id)),
         include=["metadatas", "distances"],
     )
 
@@ -114,16 +121,43 @@ def search_summaries(
 
 
 # -- Filter and fusion helpers -----------------------------------------------
-def _build_filter(user_id: str, source_filter: list[str] | None = None) -> dict | None:
-    """Build a ChromaDB where filter for user isolation and optional source filtering."""
+def _exclude_clause(excluded: set[str] | None) -> dict | None:
+    """
+    A `$nin` clause hiding sources whose ingestion job hasn't finished, or None.
+
+    A job stores its chunks and summary in ChromaDB and then spends minutes
+    building its knowledge graph, so between those points the source is
+    physically searchable while the app considers it unfinished. The frontend
+    already keeps it out of the source picker; this is what makes that a real
+    guarantee rather than a UI convention — without it an unfiltered question
+    still retrieves from a half-built document.
+
+    Returns None when nothing is in flight, which is the overwhelmingly common
+    case: an empty `$nin` is not a filter worth sending to Chroma.
+    """
+    return {"source": {"$nin": sorted(excluded)}} if excluded else None
+
+
+def _build_filter(
+    user_id: str,
+    source_filter: list[str] | None = None,
+    excluded: set[str] | None = None,
+) -> dict | None:
+    """Build a ChromaDB where filter for user isolation, optional source
+    filtering, and exclusion of sources still being ingested."""
     # ChromaDB requires explicit $and for multi-field filters
+    clauses: list[dict] = [{"user_id": user_id}]
+
     if source_filter and len(source_filter) == 1:
-        return {"$and": [{"user_id": user_id}, {"source": source_filter[0]}]}
+        clauses.append({"source": source_filter[0]})
+    elif source_filter:
+        clauses.append({"source": {"$in": source_filter}})
 
-    if source_filter and len(source_filter) > 1:
-        return {"$and": [{"user_id": user_id}, {"source": {"$in": source_filter}}]}
+    exclude = _exclude_clause(excluded)
+    if exclude:
+        clauses.append(exclude)
 
-    return {"user_id": user_id}
+    return clauses[0] if len(clauses) == 1 else {"$and": clauses}
 
 
 def _rrf(vector_ranks: list[int], bm25_ranks: list[int], k: int = RRF_K) -> dict:

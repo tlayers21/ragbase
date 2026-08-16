@@ -161,12 +161,17 @@ export interface StreamQueryHandlers {
   onSources: (sources: string[], scores: number[], chunks: import("@/types").CitedChunk[]) => void;
   /** Fired once for /query/with_attachments after attachments are processed server-side. */
   onAttachments?: (attachments: AttachmentResult[]) => void;
+  /** The backend's own elapsed time for this request, in ms, delivered just before
+   * [DONE]. Half of the end-to-end latency figure — the caller adds its own time
+   * from here to final paint. */
+  onTiming?: (serverMs: number) => void;
   onDone: () => void;
 }
 
 // Parses SSE frames of the form "data: {token}\n\n", "data: [STAGE]{json}\n\n"
 // progress events, "data: [ATTACHMENTS]{json}\n\n" (attachment query only), a
-// final "data: [SOURCES]{json}\n\n" citation event, and "data: [DONE]\n\n".
+// "data: [SOURCES]{json}\n\n" citation event, a "data: [TIMING]{json}\n\n" server
+// timing event, and "data: [DONE]\n\n".
 // Shared by streamQuery(), streamDirectQuery(), and streamAttachmentQuery().
 async function consumeQueryStream(
   res: Response,
@@ -238,6 +243,16 @@ async function consumeQueryStream(
         }
         continue;
       }
+      if (payload.startsWith("[TIMING]")) {
+        try {
+          const { server_ms } = JSON.parse(payload.slice("[TIMING]".length));
+          if (typeof server_ms === "number") handlers.onTiming?.(server_ms);
+        } catch {
+          // ignore malformed timing payload — the latency badge is cosmetic and
+          // must never cost the caller an answer it already received
+        }
+        continue;
+      }
       // Token frames are JSON-encoded strings (see _sse_token in api/query.py) so
       // that newlines survive the blank-line frame delimiter and markdown lists,
       // paragraphs and headings render as written. Any control frame was matched
@@ -279,7 +294,8 @@ export async function streamQuery(
 }
 
 // Bypasses the RAG pipeline entirely — used when the user has deselected
-// all sources ("direct LLM mode"). No [STAGE] events are emitted server-side.
+// all sources ("direct LLM mode"). It still emits one [STAGE] event,
+// `generating`; it simply has no retrieval stages to report.
 export async function streamDirectQuery(
   question: string,
   history: { role: string; content: string }[],
@@ -422,13 +438,21 @@ export async function compactMessages(
   return (data.summary as string) ?? "";
 }
 
-export async function shouldResetSessions(): Promise<boolean> {
+/**
+ * Timestamp of the most recent `scripts/reset_all.sh` run, or null if the app has
+ * never been reset (or the backend isn't reachable yet).
+ *
+ * The caller compares this against the last value it acted on rather than trusting
+ * a one-shot signal, so a reset reaches every browser and a call that fails against
+ * a not-yet-warm backend only defers the clear to the next load instead of losing it.
+ */
+export async function fetchResetToken(): Promise<number | null> {
   try {
     const res = await fetch(`${getBaseUrl()}/sessions/should_reset`);
-    if (!res.ok) return false;
+    if (!res.ok) return null;
     const data = await res.json();
-    return data.reset === true;
+    return typeof data.reset_at === "number" ? data.reset_at : null;
   } catch {
-    return false;
+    return null;
   }
 }

@@ -16,7 +16,6 @@ interface ChatAreaProps {
   error: string | null;
   sources: SourceSummary[];
   selectedSources: Set<string>;
-  buildingGraphSources: Set<string>;
   /** Jobs actively consuming the machine — drives the warning banner. */
   ingestingJobs: IngestionJob[];
   onToggleSource: (source: string) => void;
@@ -45,7 +44,6 @@ export function ChatArea({
   error,
   sources,
   selectedSources,
-  buildingGraphSources,
   ingestingJobs,
   onToggleSource,
   onSelectAllSources,
@@ -103,7 +101,6 @@ export function ChatArea({
       <SourceFilter
         sources={sources}
         selectedSources={selectedSources}
-        buildingGraphSources={buildingGraphSources}
         rightSlot={<ModelSelector />}
         onToggle={onToggleSource}
         onSelectAll={onSelectAllSources}

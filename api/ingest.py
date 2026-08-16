@@ -154,7 +154,13 @@ async def clear_done():
 
 @router.post("/cancel/{job_id}")
 async def cancel_ingestion(job_id: str):
-    """Cancel an active ingestion job (queued, ingesting, ingested, or building_graph)."""
+    """
+    Cancel an active job (queued, ingesting, or building_graph).
+
+    Cancellation is cooperative — this only flips the status, and the worker acts
+    on it at its next check. Everything the job had already written is then
+    removed, so a cancelled source leaves nothing queryable behind.
+    """
     cancelled = await asyncio.to_thread(cancel_job, job_id)
     if not cancelled:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found or not cancellable")

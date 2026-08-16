@@ -235,7 +235,10 @@ class PdfIngestor(BaseIngestor):
             if self.job_id and is_cancelled(self.job_id):
                 raise IngestionCancelled(f"Ingestion of '{source_name}' was cancelled")
 
-            logger.info(f"Processing page {i + 1}/{len(pages)} of '{source_name}'...")
+            logger.info(f"Processing page {i + 1}/{pages_total} of '{source_name}'...")
+            # i is absolute even on a resumed job, so a resume correctly picks the
+            # bar up where it left off rather than restarting at page 1.
+            self._set_progress(i + 1, pages_total, "page")
 
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
                 page.save(tmp.name, "PNG")
@@ -434,9 +437,15 @@ class PdfIngestor(BaseIngestor):
         # and its description would be dropped if we walked text pages alone.
         sorted_pages = sorted(set(page_texts) | set(images_by_page))
 
-        for page_no in sorted_pages:
+        for position, page_no in enumerate(sorted_pages, start=1):
             if self.job_id and is_cancelled(self.job_id):
                 raise IngestionCancelled(f"Ingestion of '{source_name}' was cancelled")
+
+            # Counts pages that produced content, not the PDF's true page count —
+            # sorted_pages is the union of the text and image maps, so a wholly empty
+            # page never appears. The total is therefore a lower bound, which is the
+            # right way round: the bar can't stall short of 100%.
+            self._set_progress(position, len(sorted_pages), "page")
 
             raw_page_text = "\n".join(page_texts.get(page_no, []))
             page_output = raw_page_text

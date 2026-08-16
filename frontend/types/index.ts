@@ -11,14 +11,34 @@ export interface SourceSummary {
   file_ext: string;
 }
 
+/** The full status lifecycle of an ingestion job, in order. One job runs
+ * extraction *and* its knowledge graph build, so `done` means both are finished.
+ * A failure is the literal string `error: <detail>` instead, which is why
+ * `IngestionJob.status` stays a plain string — consumers prefix-match on it. */
+export type IngestionJobStatus =
+  | "queued"
+  | "ingesting"
+  | "building_graph"
+  | "done"
+  | "cancelled";
+
 export interface IngestionJob {
   id: string;
   filename: string;
   source: string;
   suffix: string;
+  /** An `IngestionJobStatus`, or `error: <detail>`. */
   status: string;
   tmp_path?: string;
+  /** Seconds the current phase is expected to take. Rewritten when the graph
+   * phase starts, so it always describes the phase the job is in now. */
   estimated_seconds?: number;
+  /** Real countable progress through the current phase, when the phase has a
+   * countable loop: PDF pages on the VLM and Docling paths, chunks during the
+   * graph build. Absent everywhere else — notably the anydoc typed-PDF path,
+   * which is one opaque subprocess — so consumers must fall back to
+   * `estimated_seconds`. Cleared by the backend on every status change. */
+  progress?: { current: number; total: number; unit?: string };
 }
 
 export interface IngestionStatus {
@@ -74,7 +94,14 @@ export interface Message {
   mode?: QueryMode;
   /** Retrieval stage while streaming ("retrieving_sources" | "reranking" | "generating"). */
   stage?: string;
-  /** Generation latency in ms (first token -> [DONE]). */
+  /** End-to-end latency in ms: from the moment the API received the question to
+   * the moment this answer's final token was painted. Built from the server's own
+   * elapsed time (the [TIMING] frame) plus the browser's time from that frame to
+   * the post-commit paint, so no clock is ever compared across the two.
+   *
+   * It used to measure first-token -> [DONE] entirely in the browser, which
+   * excluded retrieval, reranking and every millisecond before the first token —
+   * i.e. most of what makes a query slow. */
   latencyMs?: number;
   /** True if ingestion was running at any point during this query. Ingestion and
    * queries share one Ollama process, so this is why a given answer was slow —

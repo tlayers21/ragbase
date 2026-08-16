@@ -8,7 +8,6 @@ import type { SourceSummary } from "@/types";
 interface SourceFilterProps {
   sources: SourceSummary[];
   selectedSources: Set<string>;
-  buildingGraphSources?: Set<string>;
   rightSlot?: React.ReactNode;
   onToggle: (source: string) => void;
   onSelectAll: () => void;
@@ -18,7 +17,6 @@ interface SourceFilterProps {
 export function SourceFilter({
   sources,
   selectedSources,
-  buildingGraphSources,
   rightSlot,
   onToggle,
   onSelectAll,
@@ -118,7 +116,6 @@ export function SourceFilter({
             ) : (
               filtered.map((s) => {
                 const checked = selectedSources.has(s.source);
-                const isBuilding = buildingGraphSources?.has(s.source);
                 return (
                   <button
                     key={s.source}
@@ -135,12 +132,6 @@ export function SourceFilter({
                       )}
                     />
                     <span className="flex-1 truncate text-xs">{s.source}</span>
-                    {isBuilding && (
-                      <span
-                        className="h-1.5 w-1.5 rounded-full bg-amber-500 flex-shrink-0"
-                        title="Knowledge graph still building"
-                      />
-                    )}
                   </button>
                 );
               })

@@ -7,10 +7,6 @@ export const PASTE_TEXT_THRESHOLD = 5000;
 export const ACCEPTED_ATTACHMENT_TYPES =
   "image/png,image/jpeg,image/gif,image/webp,application/pdf,.pdf,.txt,.md,text/plain,text/markdown";
 
-// pdfjs-dist version pinned to match the installed package (see PDFPreview.tsx
-// for the same gotcha) — check with: grep '"version"' node_modules/pdfjs-dist/package.json
-const PDFJS_VERSION = "5.4.296";
-
 export function classifyFile(file: File): AttachmentType | null {
   if (file.type.startsWith("image/")) return "image";
   const name = file.name.toLowerCase();
@@ -34,14 +30,14 @@ export function twoLinePreview(text: string): string {
 }
 
 // Best-effort page count for a PDF attachment card — dynamically imported so
-// pdfjs-dist (large) never inflates the main chat bundle for users who never
-// attach a PDF. Returns undefined on any failure ("if available" per spec).
+// pdf.js (large) never inflates the main chat bundle for users who never attach
+// a PDF. Returns undefined on any failure ("if available" per spec).
 export async function getPdfPageCount(file: File): Promise<number | undefined> {
   try {
-    const pdfjs = await import("pdfjs-dist");
-    if (!pdfjs.GlobalWorkerOptions.workerSrc) {
-      pdfjs.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.mjs`;
-    }
+    // Dynamic so the cost stays off the initial bundle; lib/pdf sets workerSrc
+    // to the local worker as a side effect of being imported, which is also
+    // what stops this from reaching for a CDN on a machine with no network.
+    const { pdfjs } = await import("@/lib/pdf");
     const buf = await file.arrayBuffer();
     const doc = await pdfjs.getDocument({ data: buf }).promise;
     return doc.numPages;

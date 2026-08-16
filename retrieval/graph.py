@@ -255,6 +255,7 @@ def build_from_chunks(
     source: str,
     user_id: str,
     should_stop: Callable[[], bool] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> None:
     """
     Extract entities and relationships from all chunks of a source
@@ -264,6 +265,12 @@ def build_from_chunks(
     `should_stop` is polled once per chunk and again right before that chunk's
     inserts, so a cancelled or deleted source abandons the build instead of
     writing rows for something that no longer exists.
+
+    `on_progress(done, total)` reports chunks completed. It is called only when the
+    integer percentage changes, not once per chunk: the caller's writer rewrites the
+    whole queue-status file under a lock the query path also contends for, and a
+    several-hundred-chunk build would otherwise do that several hundred times to move
+    a progress bar by less than a pixel.
     """
     user_id = _validate_user_id(user_id)
     conn = _get_connection(user_id)
@@ -271,12 +278,21 @@ def build_from_chunks(
     total_entities = 0
     total_edges = 0
     stopped = False
+    last_pct = -1
 
     try:
-        for chunk in chunks:
+        for done, chunk in enumerate(chunks):
             if should_stop is not None and should_stop():
                 stopped = True
                 break
+
+            if on_progress is not None:
+                pct = done * 100 // len(chunks)
+                if pct != last_pct:
+                    last_pct = pct
+                    # 1-based: the chunk about to be worked on, matching how the
+                    # PDF page loops report.
+                    on_progress(done + 1, len(chunks))
 
             _yield_to_queries(source)
             extracted = extract_entities(chunk, source)

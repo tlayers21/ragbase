@@ -44,6 +44,35 @@ def _load():
 
 
 # -- Public API ------------------------------------------------------------
+def warm_reranker() -> None:
+    """
+    Load the cross-encoder and run one forward pass, letting failures propagate.
+
+    Startup warmup used to call `rerank("warmup", ["warmup"], [{}])` instead, and
+    that reported success no matter what happened: `rerank()` swallows a load
+    failure and returns the original order (correct on the query path — a query
+    should degrade, not 500), so a reranker that never loaded still logged
+    "reranker warmed up" while every later query silently fell back to unranked
+    passthrough with synthetic 1.0 scores. Warmup is the one caller that needs
+    the opposite behaviour, so it gets its own entry point.
+
+    Runs a real forward pass rather than just `_load()`: loading the weights and
+    executing on MPS are separate costs, and only doing both leaves the model
+    genuinely ready when the UI's gate lifts.
+    """
+    model, tokenizer = _load()
+    with torch.no_grad():
+        encoded = tokenizer(
+            [("warmup", "warmup")],
+            padding=True,
+            truncation=True,
+            max_length=MAX_LENGTH,
+            return_tensors="pt",
+        )
+        device = next(model.parameters()).device
+        model(**{k: v.to(device) for k, v in encoded.items()})
+
+
 def rerank(
     question: str,
     docs: list[str],

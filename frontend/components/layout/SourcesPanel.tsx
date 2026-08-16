@@ -1,16 +1,26 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { ChevronRight, X, Trash2, Hourglass, AlertTriangle, Loader2, CheckCircle2, GitBranch } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DropZone } from "@/components/sources/DropZone";
 import { generateTitle } from "@/lib/api";
 import type { IngestionJob } from "@/types";
 
-// Once a source reaches "ingested" it's already queryable — the graph-build
-// stages (waiting_for_graph, building_graph) that follow are non-destructive
-// background work, so cancelling them wouldn't undo anything worth undoing.
-const CANCELLABLE_STATUSES = new Set(["queued", "ingesting"]);
+// Cancellable for its whole life, graph build included: the job holds the single
+// worker until it's done, so stopping it is the only way to get the queue back.
+// Cancelling discards the source's data — see the confirm copy below.
+const CANCELLABLE_STATUSES = new Set(["queued", "ingesting", "building_graph"]);
+
+// One bar across the whole job, split into the two phases it actually has. The
+// bar only ever moves forward: extraction fills the first stretch, the graph
+// build the second, and `done` fills it. Both animate against the job's
+// estimated_seconds, which the backend rewrites at the phase boundary.
+const PROGRESS_BANDS: Record<string, [number, number]> = {
+  ingesting: [10, 60],
+  building_graph: [60, 95],
+};
+
 const VIDEO_SUFFIXES = new Set([".mp4", ".mov", ".avi", ".mkv", ".webm"]);
 const IMAGE_SUFFIXES = new Set([".png", ".jpg", ".jpeg", ".webp", ".tiff"]);
 
@@ -23,17 +33,58 @@ function slugify(text: string): string {
     .slice(0, 100);
 }
 
+// "Page 3 of 4" / "Chunk 40 of 210" — null whenever the phase has nothing
+// countable to report, which is most of them (see IngestionJob.progress).
+function progressLabel(job: IngestionJob): string | null {
+  const p = job.progress;
+  if (!p || p.total <= 0) return null;
+  const unit = p.unit ?? "page";
+  return `${unit.charAt(0).toUpperCase()}${unit.slice(1)} ${p.current} of ${p.total}`;
+}
+
 function PendingJobProgress({ job }: { job: IngestionJob }) {
   const { status, estimated_seconds, suffix = "" } = job;
   const [barPct, setBarPct] = useState(10);
   const [overEstimate, setOverEstimate] = useState(false);
 
+  const counted = progressLabel(job);
+  const band = PROGRESS_BANDS[status];
+
+  // Two mutually exclusive ways to fill the bar, and they must stay that way. When
+  // the backend reports real counts the bar is driven straight off them; otherwise
+  // it animates against estimated_seconds below. Running both would mean re-arming
+  // the rAF easing on every 2s poll, and since the effect resets to the band floor
+  // each time it re-runs, the bar would visibly jump backwards once per poll.
+  const dataDriven = counted !== null && band !== undefined;
+  const rawFillPct =
+    dataDriven && job.progress
+      ? band[0] + (job.progress.current / job.progress.total) * (band[1] - band[0])
+      : barPct;
+
+  // The two fills are computed independently, so the handover between them moves
+  // the bar backwards: a PDF eased to ~35% against its estimate drops to 10.5% the
+  // instant the backend reports "page 1 of 100". Clamp to a high-water mark so the
+  // bar only ever advances, as the comment on PROGRESS_BANDS promises. One mark
+  // spans the whole job because the bands ascend (10-60 then 60-95), so the reset
+  // to a new band's floor on a status change is absorbed rather than shown. Safe
+  // to write during render: Math.max is idempotent, so StrictMode's double render
+  // lands on the same value, and the row is keyed by job.id, so a new job remounts
+  // with a fresh mark.
+  const highWater = useRef(0);
+  highWater.current = Math.max(highWater.current, rawFillPct);
+  const fillPct = highWater.current;
+
   useEffect(() => {
-    if (status !== "ingesting") {
+    const band = PROGRESS_BANDS[status];
+    if (!band) {
       setBarPct(10);
       setOverEstimate(false);
       return;
     }
+
+    const [floor, ceiling] = band;
+    setBarPct(floor);
+    setOverEstimate(false);
 
     const estMs = (estimated_seconds ?? 0) * 1000;
     if (!estMs) return;
@@ -45,7 +96,7 @@ function PendingJobProgress({ job }: { job: IngestionJob }) {
       const elapsed = now - startTime;
       const t = Math.min(1, elapsed / estMs);
       const eased = 1 - Math.pow(1 - t, 2.5);
-      setBarPct(10 + eased * 52);
+      setBarPct(floor + eased * (ceiling - floor));
       setOverEstimate(elapsed > estMs);
       if (elapsed < estMs) {
         rafId = requestAnimationFrame(tick);
@@ -61,19 +112,22 @@ function PendingJobProgress({ job }: { job: IngestionJob }) {
   }
 
   if (status === "ingesting") {
-    const shimmer = overEstimate || !estimated_seconds;
-    const label =
+    // Real counts mean the bar can't be "over" its estimate — there's nothing left
+    // to guess at, so the uncertainty shimmer would be misleading.
+    const shimmer = !dataDriven && (overEstimate || !estimated_seconds);
+    const phase =
       suffix === ".url" ? "Processing YouTube…"
       : VIDEO_SUFFIXES.has(suffix) ? "Processing video…"
       : IMAGE_SUFFIXES.has(suffix) ? "Processing image…"
       : suffix === ".txt" || suffix === ".md" ? "Processing text…"
       : "Processing PDF…";
+    const label = counted ? `${phase} ${counted}` : phase;
     return (
       <div className="space-y-0.5">
         <div className="h-1 w-full rounded-full bg-border overflow-hidden">
           <div
             className={cn("h-full rounded-full bg-blue-500", shimmer && "progress-shimmer")}
-            style={{ width: `${barPct}%` }}
+            style={{ width: `${fillPct}%` }}
           />
         </div>
         <p className="text-[10px] text-foreground-muted">{label}</p>
@@ -81,52 +135,23 @@ function PendingJobProgress({ job }: { job: IngestionJob }) {
     );
   }
 
-  if (status === "ingested") {
-    return (
-      <div className="space-y-1">
-        <div className="h-1 w-full rounded-full bg-border overflow-hidden">
-          <div className="h-full rounded-full bg-green-500" style={{ width: "65%" }} />
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="text-[9px] font-medium text-green-600 dark:text-green-400 bg-green-500/10 rounded-full px-1.5 py-0.5">
-            Ready
-          </span>
-          <p className="text-[10px] text-foreground-muted">Preparing knowledge graph…</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (status === "waiting_for_graph") {
-    return (
-      <div className="space-y-1">
-        <div className="h-1 w-full rounded-full bg-border overflow-hidden">
-          <div className="h-full rounded-full bg-green-500" style={{ width: "65%" }} />
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="text-[9px] font-medium text-green-600 dark:text-green-400 bg-green-500/10 rounded-full px-1.5 py-0.5">
-            Ready
-          </span>
-          <Hourglass className="h-3 w-3 text-foreground-muted/60 flex-shrink-0" />
-          <p className="text-[10px] text-foreground-muted">Waiting to build knowledge graph…</p>
-        </div>
-      </div>
-    );
-  }
-
+  // Same blue bar as extraction, continuing up the track — this is the back half
+  // of one job, not a separate "already usable" state. Green is reserved for
+  // `done`, which is the only point at which the source is queryable.
   if (status === "building_graph") {
+    const shimmer = !dataDriven && (overEstimate || !estimated_seconds);
+    const label = counted
+      ? `Building knowledge graph… ${counted}`
+      : "Building knowledge graph…";
     return (
-      <div className="space-y-1">
+      <div className="space-y-0.5">
         <div className="h-1 w-full rounded-full bg-border overflow-hidden">
-          <div className="h-full rounded-full bg-green-500 progress-shimmer" style={{ width: "65%" }} />
+          <div
+            className={cn("h-full rounded-full bg-blue-500", shimmer && "progress-shimmer")}
+            style={{ width: `${fillPct}%` }}
+          />
         </div>
-        <div className="flex items-center gap-1.5">
-          <span className="text-[9px] font-medium text-green-600 dark:text-green-400 bg-green-500/10 rounded-full px-1.5 py-0.5">
-            Ready
-          </span>
-          <Loader2 className="h-3 w-3 text-foreground-muted/60 animate-spin flex-shrink-0" />
-          <p className="text-[10px] text-foreground-muted">Building knowledge graph…</p>
-        </div>
+        <p className="text-[10px] text-foreground-muted">{label}</p>
       </div>
     );
   }
@@ -363,12 +388,10 @@ export function SourcesPanel({
             const jobIcon =
               job.status === "queued" ? (
                 <Hourglass className="h-4 w-4 text-yellow-500 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
-              ) : job.status === "done" || job.status === "ingested" ? (
+              ) : job.status === "done" ? (
                 <CheckCircle2 className="h-4 w-4 text-green-500 flex-shrink-0 mt-0.5" />
-              ) : job.status === "waiting_for_graph" ? (
-                <Hourglass className="h-4 w-4 text-foreground-muted/60 flex-shrink-0 mt-0.5" />
               ) : job.status === "building_graph" ? (
-                <GitBranch className="h-4 w-4 text-green-500 flex-shrink-0 mt-0.5" />
+                <GitBranch className="h-4 w-4 text-blue-500 flex-shrink-0 mt-0.5" />
               ) : (
                 <Loader2 className="h-4 w-4 text-foreground-muted flex-shrink-0 mt-0.5 animate-spin" />
               );
@@ -403,7 +426,8 @@ export function SourcesPanel({
                     <div className="flex items-start gap-1.5 mb-1.5">
                       <AlertTriangle className="h-3 w-3 text-amber-500 flex-shrink-0 mt-0.5" />
                       <p className="text-[11px] text-foreground leading-snug">
-                        Cancel ingestion of &lsquo;{job.source}&rsquo;? Progress will be lost.
+                        Cancel &lsquo;{job.source}&rsquo;? Everything ingested so far is
+                        discarded, including any knowledge graph already built.
                       </p>
                     </div>
                     <div className="flex items-center gap-2">

@@ -16,7 +16,10 @@ const MAX_NAMED_SOURCES = 2;
  * like a bug.
  */
 function phaseLabel(jobs: IngestionJob[]): string {
-  const extracting = jobs.some((j) => j.status === "queued" || j.status === "ingesting");
+  // Only "ingesting" counts as extracting. A queued job is waiting its turn
+  // behind the job that's running — and now that a graph build holds the worker
+  // for minutes, claiming its text is being extracted would be plainly wrong.
+  const extracting = jobs.some((j) => j.status === "ingesting");
   const graphing = jobs.some((j) => j.status === "building_graph");
   if (extracting && graphing) return "Extracting text and building knowledge graphs";
   if (graphing) return "Building the knowledge graph";

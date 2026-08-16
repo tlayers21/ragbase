@@ -6,9 +6,33 @@ cd "$(dirname "$0")/.."
 
 echo "=== Starting RAGbase ==="
 
-# 0. Clear ports before starting
-lsof -ti :3000 | xargs kill -9 2>/dev/null || true
-lsof -ti :8001 | xargs kill -9 2>/dev/null || true
+# 0. Clear ports before starting.
+#    SIGTERM first, then SIGKILL only for whatever ignored it. A leftover backend
+#    from a previous session has a shutdown hook that unloads its models from
+#    Ollama, and `kill -9` skips it — so the old instance's several GB stayed
+#    pinned on the GPU while the new one warmed its own copies alongside them.
+clear_port() {
+    local port="$1"
+    local pids
+    pids=$(lsof -ti ":$port" 2>/dev/null) || true
+    [ -z "$pids" ] && return 0
+
+    echo "Port $port in use, stopping (PIDs: $(echo "$pids" | tr '\n' ' '))"
+    echo "$pids" | xargs kill 2>/dev/null || true
+
+    # Bounded wait — a graceful stop must never hang the launch.
+    for _ in $(seq 1 20); do
+        pids=$(lsof -ti ":$port" 2>/dev/null) || true
+        [ -z "$pids" ] && return 0
+        sleep 0.5
+    done
+
+    echo "Port $port still held after 10s, forcing"
+    echo "$pids" | xargs kill -9 2>/dev/null || true
+}
+
+clear_port 3000
+clear_port 8001
 
 # 1. Create the directories the app writes into. Each of these is also created
 #    lazily at runtime (chromadb by PersistentClient, sources by _save_source_file,
@@ -48,10 +72,24 @@ cleanup() {
     # `npm start` spawns next-server as a child; killing the npm wrapper alone
     # leaves it holding port 3000.
     pkill -f "next-server" 2>/dev/null || true
+
+    # Wait for the backend's shutdown hook to unload its models from Ollama
+    # before returning the prompt. Without this the script exited immediately and
+    # the shell looked idle while several GB were still being released. Bounded,
+    # because a wedged unload must not hold the terminal hostage — the finite
+    # OLLAMA_KEEP_ALIVE is the backstop if we give up here.
+    for _ in $(seq 1 20); do
+        kill -0 "$BACKEND_PID" 2>/dev/null || break
+        sleep 0.5
+    done
+
     echo "Stopped."
     exit 0
 }
-trap cleanup INT TERM
+# HUP included: closing the terminal window or tab sends SIGHUP, and uvicorn
+# handles only INT/TERM — so without this the default action killed it outright
+# and the shutdown hook never ran, leaving the models pinned for the full TTL.
+trap cleanup INT TERM HUP
 
 # 4. Build frontend if changed, then start.
 #    md5 on macOS, md5sum on Linux — install.sh supports both.

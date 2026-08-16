@@ -12,25 +12,24 @@ import {
 import { deriveSourceName } from "@/lib/utils";
 import type { IngestionJob } from "@/types";
 
-const ACTIVE_STATUSES = new Set([
-  "queued",
-  "ingesting",
-  "ingested",
-  "waiting_for_graph",
-  "building_graph",
-]);
+// One status set, because there is now one lifecycle: a job holds the single
+// worker from the moment it starts until its knowledge graph is built. There used
+// to be a second, narrower set for "the machine is actually busy" — extraction and
+// the graph ran on separate queues, so `ingested`/`waiting_for_graph` were hand-off
+// states with nothing running. Both are gone, and so is the distinction.
+const ACTIVE_STATUSES = new Set(["queued", "ingesting", "building_graph"]);
 
-// The subset of ACTIVE_STATUSES where the job is actually burning the CPU/GPU a
-// query needs, so a warning is warranted. "ingested" and "waiting_for_graph" are
-// hand-off states — the source is already queryable and nothing is running for
-// it — so they'd cry wolf.
-const BUSY_STATUSES = new Set(["queued", "ingesting", "building_graph"]);
-
-function hasActiveJobs(jobs: IngestionJob[]): boolean {
-  return jobs.some((j) => ACTIVE_STATUSES.has(j.status));
+/** Whether a job is still occupying the ingestion worker (or waiting for it). */
+export function isActiveStatus(status: string): boolean {
+  return ACTIVE_STATUSES.has(status);
 }
 
-// Dynamic poll interval: fast while queued so transitions feel immediate.
+function hasActiveJobs(jobs: IngestionJob[]): boolean {
+  return jobs.some((j) => isActiveStatus(j.status));
+}
+
+// Dynamic poll interval: fast while queued so transitions feel immediate. The
+// graph phase is the slow one and has nothing to report between chunks.
 function pollInterval(jobs: IngestionJob[]): number {
   if (jobs.some((j) => j.status === "queued")) return 1000;
   if (jobs.some((j) => j.status === "ingesting")) return 2000;
@@ -247,7 +246,7 @@ export function useIngestion(onComplete?: () => void) {
     }
   }, []);
 
-  const activeJobCount = jobs.filter((j) => ACTIVE_STATUSES.has(j.status)).length;
+  const activeJobCount = jobs.filter((j) => isActiveStatus(j.status)).length;
   const clearableJobCount = jobs.filter(
     (j) => j.status === "done" || j.status === "cancelled" || j.status.startsWith("error")
   ).length;
@@ -255,7 +254,7 @@ export function useIngestion(onComplete?: () => void) {
   // the server confirms; the banner has to honour that too or it keeps warning
   // about work the user just stopped.
   const ingestingJobs = jobs.filter(
-    (j) => BUSY_STATUSES.has(j.status) && !hiddenJobIds.has(j.id)
+    (j) => isActiveStatus(j.status) && !hiddenJobIds.has(j.id)
   );
 
   return {

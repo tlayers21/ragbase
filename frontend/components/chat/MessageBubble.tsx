@@ -250,9 +250,32 @@ export function MessageBubble({ message }: MessageBubbleProps) {
       onMouseLeave={() => setIsHovered(false)}
     >
       <div className="flex-1 min-w-0 pb-1">
-        {isStreamingEmpty ? (
-          <ThinkingIndicator stage={message.stage} />
-        ) : (
+        {/* The indicator is shown alongside the answer, not instead of it.
+            Making the two exclusive on `content.length === 0` meant the first
+            token unmounted the stage line, so a stage was only ever visible if a
+            multi-second blocking step followed it. `generating` is the one stage
+            whose successor is the token stream: measured on the wire, the gap
+            between the [STAGE] frame and the first token is 163ms on a cache hit
+            and 355ms in direct mode — far too short to read, and when both land
+            in one reader.read() React batches them and it never paints at all.
+            `retrieving_sources` had the same problem whenever a graph exists,
+            since `traversing_graph` follows it 190ms later.
+
+            Keyed on `isComplete` instead: the stage line stays up for the whole
+            generating phase and disappears when the answer is finished.
+
+            `|| isStreamingEmpty` keeps one case the old condition covered on its
+            own: a stream stopped before its first token. `useChat` calls
+            `onDone()` (which sets isComplete) *before* writing `stage:
+            "stopped"`, so that message is complete-but-empty, and on
+            `!isComplete` alone it would render as a blank bubble instead of the
+            permanent "Stopped." the stop button is supposed to leave behind. */}
+        {(!message.isComplete || isStreamingEmpty) && (
+          <div className="mb-2">
+            <ThinkingIndicator stage={message.stage} />
+          </div>
+        )}
+        {!isStreamingEmpty && (
           <div className="markdown-body text-sm text-foreground leading-relaxed">
             <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
               {message.content}
@@ -267,6 +290,9 @@ export function MessageBubble({ message }: MessageBubbleProps) {
               {message.stage === "stopped" ? (
                 <span className="text-[10px] text-foreground-muted/50">stopped</span>
               ) : (
+                // End-to-end: API receipt through to this answer being painted.
+                // Undefined until the post-paint measurement lands a frame after
+                // [DONE], and on a stopped stream it never lands at all.
                 message.latencyMs !== undefined && (
                   <span className="text-[10px] text-foreground-muted/50">
                     {message.latencyMs < 1000

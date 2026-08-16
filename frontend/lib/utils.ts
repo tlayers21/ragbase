@@ -14,19 +14,33 @@ export function deriveSourceName(filename: string): string {
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".tiff"]);
 
+// Formats whose bytes are meaningful as characters. Everything else that the
+// ingest surface accepts — the 20 office formats, e-books, video — is a
+// container we have no renderer for.
+const TEXT_EXTENSIONS = new Set([".txt", ".md", ".csv"]);
+
 /**
  * Decide how to preview a stored source from its extension alone.
  *
- * The extension now arrives with the source listing (`SourceSummary.file_ext`),
+ * The extension arrives with the source listing (`SourceSummary.file_ext`),
  * which is what lets previews skip the HEAD against `/sources/{source}/file`
  * that used to sniff Content-Type — one fewer FastAPI round-trip per card.
- * Anything unrecognized renders as text, matching the old server-side default.
+ *
+ * The fourth kind, `"binary"`, exists because this used to end in a bare
+ * `return "text"`. `SUPPORTED_EXTENSIONS` on the backend covers 20 office
+ * formats plus five video containers, so `.docx`, `.pptx`, `.xlsx`, `.epub` and
+ * `.mp4` all resolved to "text" — and the preview pane then fetched the file and
+ * dumped 800 characters of ZIP or OLE header into a `<pre>`. For a video it was
+ * worse than cosmetic: `fetchTextFile` downloads the response in full and calls
+ * `.text()` on it *before* the slice, so previewing a 300MB .mp4 pulled the
+ * whole thing into memory to render mojibake.
  */
-export function sourceTypeFromExt(fileExt: string): "pdf" | "image" | "text" {
+export function sourceTypeFromExt(fileExt: string): "pdf" | "image" | "text" | "binary" {
   const ext = fileExt.toLowerCase();
   if (ext === ".pdf") return "pdf";
   if (IMAGE_EXTENSIONS.has(ext)) return "image";
-  return "text";
+  if (TEXT_EXTENSIONS.has(ext)) return "text";
+  return "binary";
 }
 
 // Extensions we're willing to strip off a source name. Deliberately an explicit

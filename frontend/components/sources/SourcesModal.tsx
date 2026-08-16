@@ -2,18 +2,27 @@
 
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import dynamic from "next/dynamic";
-import { X, Search, Trash2, FileText, Loader2, ChevronLeft } from "lucide-react";
+import {
+  X,
+  Search,
+  Trash2,
+  FileText,
+  Loader2,
+  ChevronLeft,
+  Hourglass,
+  GitBranch,
+} from "lucide-react";
 import {
   fetchSources,
   deleteSource as apiDeleteSource,
-  cancelIngestion,
   getSourceFileUrl,
   getStaticSourceFileUrl,
   fetchTextFile,
   fetchSourceType,
 } from "@/lib/api";
 import { cn, sourceTypeFromExt } from "@/lib/utils";
-import type { SourceSummary } from "@/types";
+import { isActiveStatus } from "@/hooks/useIngestion";
+import type { IngestionJob, SourceSummary } from "@/types";
 
 // Lazy-load react-pdf to keep the main bundle light (PDF.js is large)
 const PDFPreview = dynamic(() => import("@/components/sources/PDFPreview"), { ssr: false });
@@ -21,7 +30,10 @@ const PDFThumbnailView = dynamic(() => import("@/components/sources/PDFThumbnail
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-type SourceType = "pdf" | "image" | "text";
+// "binary" covers everything the ingest surface accepts but nothing here can
+// render — the office formats, e-books and video. It is a real preview outcome,
+// not a failure: see sourceTypeFromExt in lib/utils.ts.
+type SourceType = "pdf" | "image" | "text" | "binary";
 
 /**
  * Where to load a source's stored file from.
@@ -35,14 +47,17 @@ function useSourceFileUrl(source: SourceSummary): string | null {
   const [url, setUrl] = useState<string | null>(null);
 
   useEffect(() => {
+    // Cleared up front, not just on the no-file branch. Without this the hook
+    // kept returning the *previous* source's URL until the async resolve landed,
+    // so opening a second preview briefly rendered the first file.
+    setUrl(null);
+
     // `GET /documents/` derives file_ext from a listing of data/sources, so an
     // empty one means no original was ever stored — the FastAPI fallback would
     // 404 by construction. YouTube is the ordinary case here: its transcript
     // comes straight out of Whisper and is never written to disk.
-    if (!source.file_ext) {
-      setUrl(null);
-      return;
-    }
+    if (!source.file_ext) return;
+
     let cancelled = false;
     getStaticSourceFileUrl(source.source, source.file_ext).then((staticUrl) => {
       if (!cancelled) setUrl(staticUrl ?? getSourceFileUrl(source.source));
@@ -102,6 +117,14 @@ function SourceThumbnail({ source }: { source: SourceSummary }) {
 
         resolveSourceType(source, controller.signal)
           .then(async (type) => {
+            // "binary" settles on the generic icon. It must not fall through to
+            // the text branch: that fetches the whole file to slice 300
+            // characters off it, which for a .mp4 source meant downloading the
+            // entire video to render a thumbnail of its header bytes.
+            if (type === "binary") {
+              setState({ status: "none" });
+              return;
+            }
             if (type !== "text") {
               setState({ status: type });
               return;
@@ -252,9 +275,25 @@ function PreviewPane({ source, onClose }: PreviewPaneProps) {
           <div className="px-4 py-10 text-center">
             <FileText className="mx-auto mb-2 h-6 w-6 text-foreground-muted/30" />
             <p className="text-sm text-foreground-muted">No original file stored for this source</p>
+            {/* This used to say the chunks "are still searchable", which was
+                only true for a finished source — and the modal listed unfinished
+                ones too, where retrieval excludes them outright. The grid is
+                done-only now, so searchable is simply the normal state and does
+                not need asserting; the count is the useful part. */}
             <p className="mt-1 text-xs text-foreground-muted/70">
-              Its {source.chunk_count} chunk{source.chunk_count !== 1 ? "s" : ""} are still
-              searchable.
+              Indexed as {source.chunk_count} chunk{source.chunk_count !== 1 ? "s" : ""}.
+            </p>
+          </div>
+        )}
+
+        {!isLoading && !error && type === "binary" && (
+          <div className="px-4 py-10 text-center">
+            <FileText className="mx-auto mb-2 h-6 w-6 text-foreground-muted/30" />
+            <p className="text-sm text-foreground-muted">
+              No preview for {source.file_ext || "this"} files
+            </p>
+            <p className="mt-1 text-xs text-foreground-muted/70">
+              Indexed as {source.chunk_count} chunk{source.chunk_count !== 1 ? "s" : ""}.
             </p>
           </div>
         )}
@@ -293,7 +332,6 @@ function PreviewPane({ source, onClose }: PreviewPaneProps) {
 interface SourceCardProps {
   source: SourceSummary;
   isConfirming: boolean;
-  isBuildingGraph?: boolean;
   onPreview: (source: SourceSummary) => void;
   onRequestDelete: (source: string) => void;
   onConfirmDelete: (source: string) => void;
@@ -303,7 +341,6 @@ interface SourceCardProps {
 function SourceCard({
   source,
   isConfirming,
-  isBuildingGraph,
   onPreview,
   onRequestDelete,
   onConfirmDelete,
@@ -347,11 +384,12 @@ function SourceCard({
         )}
       </div>
 
+      {/* No "still ingesting" variant any more: GET /documents/ returns finished
+          sources only, so everything in this grid is done. An in-flight job is
+          shown in the In progress section above, where it can be cancelled. */}
       {isConfirming && (
         <p className="text-[11px] text-red-600 dark:text-red-400 leading-snug" onClick={(e) => e.stopPropagation()}>
-          {isBuildingGraph
-            ? <>Still building knowledge graph. Cancel build and delete &lsquo;{source.source}&rsquo;?</>
-            : <>Delete &lsquo;{source.source}&rsquo;? This cannot be undone.</>}
+          Delete &lsquo;{source.source}&rsquo;? This cannot be undone.
         </p>
       )}
 
@@ -372,23 +410,137 @@ function SourceCard({
   );
 }
 
+// ── In-progress section ───────────────────────────────────────────────────────
+
+const JOB_STATUS_LABELS: Record<string, string> = {
+  queued: "Waiting for the worker…",
+  ingesting: "Extracting text…",
+  building_graph: "Building knowledge graph…",
+};
+
+/**
+ * Jobs still occupying the ingestion worker, with a cancel control.
+ *
+ * `GET /documents/` no longer returns mid-build sources, which is what makes the
+ * grid below trustworthy — but the reason it used to was real: you need to be
+ * able to see a stuck job and get rid of it. That capability lives here instead,
+ * driven by the ingestion queue, which is where a job's status and progress
+ * actually are. `SourcesPanel` shows the same jobs in the right-hand panel; this
+ * exists so the capability survives that panel being collapsed.
+ *
+ * Cancelling deletes the source's data (the backend's `_cleanup_partial`), which
+ * is what the confirm copy has to say — don't soften it to "progress is lost".
+ */
+function InProgressSection({
+  jobs,
+  onCancelJob,
+}: {
+  jobs: IngestionJob[];
+  onCancelJob?: (jobId: string) => void;
+}) {
+  const [pendingCancelId, setPendingCancelId] = useState<string | null>(null);
+
+  if (jobs.length === 0) return null;
+
+  return (
+    <div className="border-b border-border px-3 py-2">
+      <p className="mb-1.5 px-0.5 text-[11px] font-medium uppercase tracking-wide text-foreground-muted/60">
+        In progress · {jobs.length}
+      </p>
+      <div className="space-y-1">
+        {jobs.map((job) => {
+          const isConfirming = pendingCancelId === job.id;
+          return (
+            <div key={job.id} className="rounded-lg border border-border bg-surface px-2.5 py-2">
+              <div className="flex items-start gap-2">
+                {job.status === "queued" ? (
+                  <Hourglass className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-yellow-500 dark:text-yellow-400" />
+                ) : job.status === "building_graph" ? (
+                  <GitBranch className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-blue-500" />
+                ) : (
+                  <Loader2 className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 animate-spin text-foreground-muted" />
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs font-medium text-foreground" title={job.source}>
+                    {job.source}
+                  </p>
+                  <p className="text-[10px] text-foreground-muted">
+                    {JOB_STATUS_LABELS[job.status] ?? job.status}
+                  </p>
+                </div>
+                {onCancelJob && !isConfirming && (
+                  <button
+                    onClick={() => setPendingCancelId(job.id)}
+                    className="flex-shrink-0 rounded p-0.5 text-foreground-muted hover:text-destructive transition-colors"
+                    title="Cancel ingestion"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+              {isConfirming && (
+                <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5">
+                  <p className="mb-1.5 text-[11px] leading-snug text-foreground">
+                    Cancel &lsquo;{job.source}&rsquo;? Everything ingested so far is discarded,
+                    including any knowledge graph already built.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        onCancelJob?.(job.id);
+                        setPendingCancelId(null);
+                      }}
+                      className="rounded bg-amber-500 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-amber-600 transition-colors"
+                    >
+                      Cancel ingestion
+                    </button>
+                    <button
+                      onClick={() => setPendingCancelId(null)}
+                      className="text-[11px] text-foreground-muted hover:text-foreground transition-colors"
+                    >
+                      Keep going
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ── Modal ─────────────────────────────────────────────────────────────────────
 
 interface SourcesModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSourcesChanged?: () => void;
-  buildingGraphJobBySrc?: Record<string, string>;
+  /** Every ingestion job; the active ones drive the In progress section. */
+  jobs?: IngestionJob[];
+  onCancelJob?: (jobId: string) => void;
 }
 
-export function SourcesModal({ isOpen, onClose, onSourcesChanged, buildingGraphJobBySrc }: SourcesModalProps) {
+export function SourcesModal({
+  isOpen,
+  onClose,
+  onSourcesChanged,
+  jobs,
+  onCancelJob,
+}: SourcesModalProps) {
   const [sources, setSources] = useState<SourceSummary[]>([]);
   const [isLoadingSources, setIsLoadingSources] = useState(false);
   const [query, setQuery] = useState("");
   const [confirming, setConfirming] = useState<string | null>(null);
   const [preview, setPreview] = useState<SourceSummary | null>(null);
 
-  // Fetch fresh data every time the modal opens
+  const activeJobs = useMemo(
+    () => (jobs ?? []).filter((j) => isActiveStatus(j.status)),
+    [jobs]
+  );
+
+  // Reset the view every time the modal opens.
   useEffect(() => {
     if (!isOpen) return;
     setIsLoadingSources(true);
@@ -399,6 +551,22 @@ export function SourcesModal({ isOpen, onClose, onSourcesChanged, buildingGraphJ
       .catch(() => setSources([]))
       .finally(() => setIsLoadingSources(false));
   }, [isOpen]);
+
+  // Re-fetch when the number of in-flight jobs changes, which matters now that
+  // `GET /documents/` is done-only: a job finishing is what *adds* its source to
+  // the grid, so without this it would sit in "In progress", disappear, and not
+  // reappear until the modal was reopened. Deliberately separate from the effect
+  // above — folding it in would reset `preview` and `confirming` too, closing an
+  // open preview the moment an unrelated background job finished.
+  useEffect(() => {
+    if (!isOpen) return;
+    fetchSources()
+      .then(setSources)
+      .catch(() => {
+        // Keep the list we already have; a failed refresh is not worth emptying
+        // the grid the user is looking at.
+      });
+  }, [isOpen, activeJobs.length]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -412,10 +580,9 @@ export function SourcesModal({ isOpen, onClose, onSourcesChanged, buildingGraphJ
   const handleConfirmDelete = useCallback(
     async (source: string) => {
       try {
-        const jobId = buildingGraphJobBySrc?.[source];
-        if (jobId) {
-          await cancelIngestion(jobId);
-        }
+        // No separate cancel call first: DELETE /documents/{source} finds the
+        // source's active job, cancels it, and only then deletes — one round trip,
+        // and no window where the job writes rows between our two requests.
         await apiDeleteSource(source);
         setSources((prev) => prev.filter((s) => s.source !== source));
         setConfirming(null);
@@ -424,7 +591,7 @@ export function SourcesModal({ isOpen, onClose, onSourcesChanged, buildingGraphJ
         // keep confirming state so user can retry
       }
     },
-    [onSourcesChanged, buildingGraphJobBySrc]
+    [onSourcesChanged]
   );
 
   const handleClose = useCallback(() => {
@@ -469,9 +636,12 @@ export function SourcesModal({ isOpen, onClose, onSourcesChanged, buildingGraphJ
             <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
               <h2 className="text-sm font-semibold text-foreground">
                 Sources
+                {/* "N sources", not "N total": the grid is finished sources
+                    only, and the in-flight count is carried by its own section
+                    below rather than folded into one misleading number. */}
                 {!isLoadingSources && (
                   <span className="ml-2 text-xs font-normal text-foreground-muted">
-                    {sources.length} total
+                    {sources.length} source{sources.length !== 1 ? "s" : ""}
                   </span>
                 )}
               </h2>
@@ -508,6 +678,7 @@ export function SourcesModal({ isOpen, onClose, onSourcesChanged, buildingGraphJ
 
             {/* Content */}
             <div className="flex-1 overflow-y-auto">
+              <InProgressSection jobs={activeJobs} onCancelJob={onCancelJob} />
               {isLoadingSources ? (
                 <div className="flex items-center justify-center gap-2 py-12 text-foreground-muted">
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -515,7 +686,11 @@ export function SourcesModal({ isOpen, onClose, onSourcesChanged, buildingGraphJ
                 </div>
               ) : filtered.length === 0 ? (
                 <p className="px-4 py-8 text-center text-sm text-foreground-muted">
-                  {query ? "No sources match your filter." : "No sources ingested yet."}
+                  {query
+                    ? "No sources match your filter."
+                    : activeJobs.length > 0
+                      ? "Nothing finished yet — the jobs above are still running."
+                      : "No sources ingested yet."}
                 </p>
               ) : (
                 <div className="grid grid-cols-2 gap-2 p-3">
@@ -524,7 +699,6 @@ export function SourcesModal({ isOpen, onClose, onSourcesChanged, buildingGraphJ
                       key={source.source}
                       source={source}
                       isConfirming={confirming === source.source}
-                      isBuildingGraph={!!buildingGraphJobBySrc?.[source.source]}
                       onPreview={setPreview}
                       onRequestDelete={handleRequestDelete}
                       onConfirmDelete={handleConfirmDelete}

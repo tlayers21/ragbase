@@ -62,9 +62,11 @@ echo "Source files cleared"
 
 # 6. Signal the frontend to clear chat history on next load.
 #    Chat sessions live in localStorage, never on the backend, so this flag is the
-#    only way a backend reset can reach them. GET /sessions/should_reset consumes it.
+#    only way a backend reset can reach them. GET /sessions/should_reset reports its
+#    mtime and leaves it in place; each browser remembers the last value it acted on,
+#    so every one of them clears rather than only whichever asked first.
 touch data/reset_sessions_flag
-echo "Session reset flag created — frontend will clear chat history on next startup"
+echo "Session reset marker touched — every browser clears chat history on next load"
 
 echo ""
 echo "=== Reset complete ==="

@@ -9,7 +9,7 @@ import { WarmupGate } from "@/components/layout/WarmupGate";
 import { useChat } from "@/hooks/useChat";
 import { useReadiness } from "@/hooks/useReadiness";
 import { useSources } from "@/hooks/useSources";
-import { useIngestion } from "@/hooks/useIngestion";
+import { useIngestion, isActiveStatus } from "@/hooks/useIngestion";
 import type { PendingAttachment } from "@/types";
 
 export default function HomePage() {
@@ -45,26 +45,21 @@ export default function HomePage() {
     ingestionBusyRef.current = isIngesting;
   }, [isIngesting]);
 
-  // Sources whose knowledge graph is still being built
-  const buildingGraphSources = useMemo(
-    () =>
-      new Set(
-        jobs
-          .filter((j) => j.status === "ingested" || j.status === "building_graph")
-          .map((j) => j.source)
-      ),
+  // Sources with a job still in flight — extraction or graph build, they're the
+  // same lifecycle now.
+  const activeJobSources = useMemo(
+    () => new Set(jobs.filter((j) => isActiveStatus(j.status)).map((j) => j.source)),
     [jobs]
   );
 
-  // Map source name -> job id for sources actively building their graph
-  const buildingGraphJobBySrc = useMemo(
-    () =>
-      Object.fromEntries(
-        jobs
-          .filter((j) => j.status === "building_graph")
-          .map((j) => [j.source, j.id])
-      ),
-    [jobs]
+  // A source isn't offered anywhere until its job is completely finished. Its
+  // chunks land in ChromaDB before the graph build starts, so filtering here is
+  // what keeps a half-finished document out of the picker — and it also hides a
+  // source correctly while it's being *re*-ingested, since its old data is gone
+  // by then. It reappears, and rejoins the selection, on "done".
+  const readySources = useMemo(
+    () => sources.filter((s) => !activeJobSources.has(s.source)),
+    [sources, activeJobSources]
   );
 
   const [isPanelCollapsed, setIsPanelCollapsed] = useState(false);
@@ -78,7 +73,7 @@ export default function HomePage() {
   // avoid issues with React Strict Mode's double-invocation of updaters.
   const knownSourceNamesRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    const currentNames = new Set(sources.map((s) => s.source));
+    const currentNames = new Set(readySources.map((s) => s.source));
     const added = [...currentNames].filter((n) => !knownSourceNamesRef.current.has(n));
     const removed = [...knownSourceNamesRef.current].filter((n) => !currentNames.has(n));
     knownSourceNamesRef.current = currentNames;
@@ -91,7 +86,7 @@ export default function HomePage() {
       for (const name of removed) next.delete(name);
       return next;
     });
-  }, [sources]);
+  }, [readySources]);
 
   const toggleSource = useCallback((source: string) => {
     setSelectedSources((prev) => {
@@ -106,21 +101,24 @@ export default function HomePage() {
   }, []);
 
   const selectAllSources = useCallback(() => {
-    setSelectedSources(new Set(sources.map((s) => s.source)));
-  }, [sources]);
+    setSelectedSources(new Set(readySources.map((s) => s.source)));
+  }, [readySources]);
 
   const clearAllSources = useCallback(() => {
     setSelectedSources(new Set());
   }, []);
 
-  // Refresh source list whenever a job transitions to "ingested" or "done"
-  // so those sources appear in the SourceFilter immediately.
+  // Refresh the source list when a job reaches any terminal state: "done" adds
+  // the source to the picker, and "cancelled"/"error" now *remove* data, since a
+  // cancelled job deletes whatever it had already written.
   const prevJobStatusesRef = useRef<Map<string, string>>(new Map());
   useEffect(() => {
     let needsRefresh = false;
     for (const job of jobs) {
       const prev = prevJobStatusesRef.current.get(job.id);
-      if (prev !== job.status && (job.status === "ingested" || job.status === "building_graph" || job.status === "done")) {
+      const isTerminal =
+        job.status === "done" || job.status === "cancelled" || job.status.startsWith("error");
+      if (prev !== job.status && isTerminal) {
         needsRefresh = true;
       }
       prevJobStatusesRef.current.set(job.id, job.status);
@@ -133,12 +131,12 @@ export default function HomePage() {
   const handleSend = useCallback(
     (content: string, attachments: PendingAttachment[]) => {
       const filter =
-        !isDirectMode && sources.length > 0 && selectedSources.size < sources.length
+        !isDirectMode && readySources.length > 0 && selectedSources.size < readySources.length
           ? Array.from(selectedSources)
           : null;
       chat.sendMessage(content, filter, isDirectMode, attachments);
     },
-    [chat, selectedSources, sources, isDirectMode]
+    [chat, selectedSources, readySources, isDirectMode]
   );
 
   const handleDropFiles = useCallback(
@@ -151,17 +149,19 @@ export default function HomePage() {
   );
 
   // Cover the app until the backend's models are loaded — see WarmupGate.
-  const showWarmupGate = readiness.checked && !readiness.ready && !readiness.dismissed;
+  // Deliberately shown from first paint rather than waiting for the first /health
+  // response: that wait left the app visible and clickable for the round trip,
+  // which is the exact window the gate exists to close. The gate fades itself out
+  // instead, so an already-warm backend still doesn't flash it.
+  const showWarmupGate = !readiness.ready;
 
   return (
     <>
-      {showWarmupGate && (
-        <WarmupGate
-          status={readiness.status}
-          error={readiness.error}
-          onDismiss={readiness.dismiss}
-        />
-      )}
+      <WarmupGate
+        status={readiness.status}
+        stalled={readiness.stalled}
+        ready={readiness.ready}
+      />
 
       {/* `inert` matters as much as the overlay: the cover blocks clicks, but the
           chat textarea stays tabbable behind it, and Enter would fire a query at a
@@ -191,9 +191,8 @@ export default function HomePage() {
             isLoading={chat.isLoading}
             isStreaming={chat.isStreaming}
             error={chat.error}
-            sources={sources}
+            sources={readySources}
             selectedSources={selectedSources}
-            buildingGraphSources={buildingGraphSources}
             ingestingJobs={ingestingJobs}
             onToggleSource={toggleSource}
             onSelectAllSources={selectAllSources}
@@ -234,12 +233,17 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* Sources modal — self-contained for deletion; calls refreshSources on change */}
+        {/* Sources modal — self-contained for deletion; calls refreshSources on
+            change. It takes the raw job list rather than a set of active source
+            names: `GET /documents/` is done-only now, so the modal no longer has
+            to gate anything, but it does render the in-flight jobs itself (with
+            cancel) so that capability survives SourcesPanel being collapsed. */}
         <SourcesModal
           isOpen={isSourcesModalOpen}
           onClose={() => setIsSourcesModalOpen(false)}
           onSourcesChanged={refreshSources}
-          buildingGraphJobBySrc={buildingGraphJobBySrc}
+          jobs={jobs}
+          onCancelJob={cancelJob}
         />
       </div>
     </>

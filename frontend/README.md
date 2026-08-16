@@ -29,6 +29,13 @@ npm run build      # production build — required to verify PDF rendering, dyna
 - There is no separate deploy step. `scripts/install.sh` and `scripts/start.sh` in the
   repo root build and serve this app as part of RAGbase — it isn't deployed to Vercel or
   any other host; RAGbase runs entirely on your own machine.
-- `frontend/public/static/sources` is a symlink to `../../../data/sources`, committed as
-  a symlink (mode `120000`) so a fresh clone recreates it. Source file previews depend on
-  it.
+- Source-file previews are served by `app/static/sources/[...path]/route.ts`, which streams
+  originals out of `../data/sources` with byte-range support (pdf.js needs it). This used to
+  be a `public/static/sources` symlink; Next only enumerates `public/` once at startup in a
+  production build, so anything ingested after launch 404'd.
+- pdf.js assets are local, never a CDN: `public/pdf.worker.min.mjs` is copied from
+  `node_modules/pdfjs-dist` and must be refreshed when that package is upgraded.
+  `lib/pdf.ts` is the only place the worker is configured. The cMaps that used to sit
+  beside it were dropped — they are consulted only for non-Latin embedded font encodings,
+  which this corpus does not have. Re-copy `node_modules/pdfjs-dist/cmaps/` and restore
+  `cMapUrl`/`cMapPacked` in `PDFPreview.tsx` if that ever changes.

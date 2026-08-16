@@ -1,9 +1,17 @@
+import asyncio
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 from config.models import get_model
 from utils.ollama_client import generate_stream
 from utils.text import normalize_title
+
+
+def _generate(prompt: str) -> str:
+    """Blocking title generation, kept separate so the endpoint can to_thread it."""
+    return "".join(generate_stream(prompt, model=get_model("title")))
+
 
 router = APIRouter(prefix="/title", tags=["title"])
 
@@ -21,5 +29,8 @@ async def generate_title(req: TitleRequest):
         "spaces. No punctuation, no quotes, no explanation:\n\n"
         f"{req.message[:200]}"
     )
-    title = "".join(generate_stream(prompt, model=get_model("title")))
+    # to_thread, not a bare call: useChat fires this concurrently with the first
+    # /query/stream of every new chat, so generating on the event loop froze the
+    # answer the user was watching until qwen2.5:3b finished.
+    title = await asyncio.to_thread(_generate, prompt)
     return {"title": normalize_title(title)[:60]}

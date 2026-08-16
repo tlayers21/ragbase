@@ -1,7 +1,8 @@
 import dspy
 
 from config.logging import setup_logging
-from config.settings import RERANKER_MIN_SCORE
+from config.settings import RERANKER_MAX_SCORE_GAP, RERANKER_MIN_SCORE, TOP_K_CANDIDATES
+from ingestion.queue import active_sources
 from retrieval.graph import has_graph, query_related_sources
 from retrieval.reranker import rerank
 from retrieval.search import search, search_summaries
@@ -170,14 +171,33 @@ class RAGPipeline(dspy.Module):
         augmentation, and chunk-level hybrid search. Returns raw (unranked)
         candidate chunks. Split out from rerank_candidates() so callers (e.g.
         the streaming API) can report progress between retrieval and rerank.
+
+        Sources with an in-flight ingestion job are excluded from all three
+        steps: a document is only finished once its graph build is, and until
+        then its chunks, summary and half-written graph rows must not answer
+        anything.
         """
-        # Step 1 - Document-level retrieval
+        excluded = active_sources(user_id)
+
+        # An explicit filter is narrowed rather than widened. Dropping the
+        # unfinished names and carrying on would let a filter that named *only*
+        # unfinished sources fall through to an unfiltered search, answering
+        # from documents the caller never asked about.
+        if source_filter:
+            source_filter = [s for s in source_filter if s not in excluded]
+            if not source_filter:
+                logger.info("Every requested source is still ingesting — no candidates")
+                return [], []
+
+        # Step 1 - Document-level retrieval (already excludes unfinished sources)
         relevant_sources = search_summaries(query, user_id)
         logger.info(f"Stage 1 found {len(relevant_sources)} relevant sources")
 
-        # Step 2 - Knowledge graph augmentation (skip when no graph built yet)
+        # Step 2 - Knowledge graph augmentation (skip when no graph built yet).
+        # Filtered here because the graph is read straight from SQLite, where a
+        # build in progress has already committed rows chunk by chunk.
         if has_graph(user_id):
-            graph_sources = query_related_sources(query, user_id)
+            graph_sources = [s for s in query_related_sources(query, user_id) if s not in excluded]
             all_sources = list(set(relevant_sources + graph_sources))
         else:
             all_sources = relevant_sources
@@ -187,10 +207,16 @@ class RAGPipeline(dspy.Module):
         if source_filter:
             all_sources = [s for s in all_sources if s in source_filter] or source_filter
 
-        # Step 3 - Chunk-level hybrid search
+        # Step 3 - Chunk-level hybrid search.
+        # n_results is TOP_K_CANDIDATES, not search()'s MAX_FINAL_RESULTS default:
+        # RRF fuses *ranks*, not relevance, so letting it cut 20 candidates down to
+        # 5 handed the reranker exactly as many chunks as it returns and reduced it
+        # to a reordering pass that discarded nothing. The cross-encoder is the only
+        # stage that judges relevance, so it has to see the full candidate pool.
         docs, metas = search(
             query=query,
             user_id=user_id,
+            n_results=TOP_K_CANDIDATES,
             source_filter=all_sources if all_sources else source_filter,
         )
         return docs, metas
@@ -202,8 +228,16 @@ class RAGPipeline(dspy.Module):
         metas: list[dict],
     ) -> tuple[list[str], list[dict], list[float]]:
         """
-        Step 4 of retrieval: rerank candidate chunks against the original
-        question and drop anything below RERANKER_MIN_SCORE.
+        Step 4 of retrieval: rerank candidate chunks against the original question
+        and drop the ones that aren't relevant enough to cite or to prompt with.
+
+        Two cutoffs, both in raw reranker logits. RERANKER_MIN_SCORE is the absolute
+        floor. RERANKER_MAX_SCORE_GAP is relative to the best chunk in *this* result
+        set, which catches the case the floor can't: every chunk clears the bar, but
+        one is far ahead and the rest are padding.
+
+        The surviving lists feed both the prompt and the [SOURCES] frame, so a chunk
+        dropped here is dropped from the answer and the sources panel together.
         """
         if not docs:
             return [], [], []
@@ -214,7 +248,9 @@ class RAGPipeline(dspy.Module):
             metas=metas,
         )
 
-        filtered = [(d, m, s) for d, m, s in zip(docs, metas, scores) if s >= RERANKER_MIN_SCORE]
+        # rerank() returns descending by score, so scores[0] is the best.
+        floor = max(RERANKER_MIN_SCORE, scores[0] - RERANKER_MAX_SCORE_GAP)
+        filtered = [(d, m, s) for d, m, s in zip(docs, metas, scores) if s >= floor]
         if filtered:
             docs = [d for d, _, _ in filtered]
             metas = [m for _, m, _ in filtered]

@@ -1,7 +1,9 @@
 from analysis.common import parse_verdict, update_chunk_metadata
 from config.logging import setup_logging
 from config.models import get_model
+from ingestion.queue import active_sources
 from retrieval.embed import embed
+from retrieval.search import _build_filter
 from utils.chromadb_client import get_collection
 from utils.ollama_client import generate_stream
 
@@ -63,8 +65,17 @@ def find_contradictions(source: str, user_id: str) -> int:
         )
 
         query_embedding = embed(doc)
+        # This query had no `where` at all — not even user_id — so it compared
+        # against every chunk in the collection, including sources still being
+        # ingested, and then wrote contradiction metadata onto them. Reuses the
+        # same filter builder as retrieval so "which sources are usable" has one
+        # answer across the app; `active_sources` is read per chunk because a job
+        # can finish partway through a check that runs for minutes.
         similar = collection.query(
-            query_embeddings=[query_embedding], n_results=5, include=["documents", "metadatas"]
+            query_embeddings=[query_embedding],
+            n_results=5,
+            where=_build_filter(user_id, excluded=active_sources(user_id)),
+            include=["documents", "metadatas"],
         )
 
         similar_docs = similar["documents"][0]

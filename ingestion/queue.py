@@ -15,6 +15,7 @@ from config.settings import (
     SUPPORTED_TEXT_EXTENSIONS,
     SUPPORTED_VIDEO_EXTENSIONS,
 )
+from utils.ollama_client import restore_query_models
 
 logger = setup_logging(__name__)
 
@@ -22,27 +23,37 @@ logger = setup_logging(__name__)
 _queue = queue.Queue()
 _worker_thread = None
 
-_graph_queue = queue.Queue()
-_graph_worker_thread = None
-
-_ACTIVE_STATUSES = {"queued", "ingesting", "ingested", "waiting_for_graph", "building_graph"}
+_ACTIVE_STATUSES = {"queued", "ingesting", "building_graph"}
 
 
 # -- Status file helpers ---------------------------------------------------
 # Every status update is a read-modify-write of one shared JSON file, performed by
-# the ingestion worker, the graph worker and API request threads concurrently. Two
-# problems follow, and this lock is what prevents both:
+# the ingestion worker and API request threads concurrently. Two problems follow,
+# and this lock is what prevents both:
 #   1. Lost updates — two threads load the same list, each edits one job, and the
 #      second write discards the first thread's edit.
-#   2. A crash — both threads used to write the same "queue_status.json.tmp" path,
+#   2. A crash — every writer used to build the same "queue_status.json.tmp" path,
 #      so whichever called os.replace() second hit FileNotFoundError and blew up
-#      its caller. That took out graph-build callbacks and left the status file
-#      empty, so the UI showed no jobs at all. It only became easy to hit once
-#      anydoc made Phase 1 fast enough to overlap with the previous job's graph
-#      enqueue; with Docling taking minutes, the window was rarely open.
+#      its caller, leaving the status file empty and the UI showing no jobs at all.
+#      That was found when ingestion and graph builds ran on two separate workers;
+#      merging them into one job removed that particular race, but the API threads
+#      (cancel, clear_completed) still write here while the worker does.
 # The unique temp name below is belt-and-braces for anything holding a stale
 # reference to these helpers from outside the lock.
 _status_lock = threading.RLock()
+
+# The job the worker is executing right now, or None between jobs. clear_completed()
+# reads it so a "cancelled" record can't be deleted out from under a job that is
+# still running - doing so left the worker with no record to check, and a job whose
+# record has vanished has nothing to stop it.
+_current_job_id: str | None = None
+
+
+def _set_current_job(job_id: str | None) -> None:
+    """Record which job the worker owns, for clear_completed()'s benefit."""
+    global _current_job_id
+    with _status_lock:
+        _current_job_id = job_id
 
 
 def _load_status() -> list:
@@ -75,6 +86,11 @@ def _update_job(job_id: str, new_status: str) -> None:
         for job in status:
             if job["id"] == job_id:
                 job["status"] = new_status
+                # Progress counts what the *current* phase is working through, so a
+                # phase change invalidates them. Without this, "Page 4 of 4" from
+                # extraction stays on screen through the whole graph build and past
+                # "done", reading as a stalled job.
+                job.pop("progress", None)
                 break
         _save_status(status)
 
@@ -86,6 +102,24 @@ def update_job_estimate(job_id: str, estimated_seconds: int) -> None:
         for job in status:
             if job["id"] == job_id:
                 job["estimated_seconds"] = estimated_seconds
+                break
+        _save_status(status)
+
+
+def update_job_progress(job_id: str, current: int, total: int, unit: str = "page") -> None:
+    """
+    Record "unit `current` of `total`" for an active job, for the UI's progress bar.
+
+    Optional by design: only phases with a countable loop set it (PDF pages on the
+    VLM and Docling paths, chunks during the graph build). Everything else leaves it
+    absent and the frontend falls back to its time-based estimate. Cleared by
+    _update_job on any status change.
+    """
+    with _status_lock:
+        status = _load_status()
+        for job in status:
+            if job["id"] == job_id:
+                job["progress"] = {"current": current, "total": total, "unit": unit}
                 break
         _save_status(status)
 
@@ -142,7 +176,8 @@ def _requeue_recovered_jobs() -> int:
 
 # -- Worker ----------------------------------------------------------------
 def _worker():
-    """Background thread that processes ingestion jobs one at a time."""
+    """Background thread that runs each job end to end — extraction through the
+    knowledge graph — one job at a time."""
     while True:
         job = _queue.get()
         if job is None:
@@ -154,6 +189,22 @@ def _worker():
         suffix = job["suffix"]
         tmp_path = job["tmp_path"]
 
+        # Cancellation has to be honoured *before* the first status write, or that
+        # write clobbers "cancelled" back to "ingesting" and the job runs anyway.
+        # A job can now sit queued for the length of the graph build ahead of it,
+        # so cancelling something that never started is the common case, not a
+        # narrow race.
+        if is_cancelled(job_id):
+            logger.info(f"Skipping cancelled job '{source}' before it started")
+            if suffix != ".url" and not job.get("is_string"):
+                try:
+                    os.remove(tmp_path)
+                except OSError as e:
+                    logger.warning(f"Could not remove temp file for cancelled '{source}': {e}")
+            _queue.task_done()
+            continue
+
+        _set_current_job(job_id)
         _update_job(job_id, "ingesting")
         logger.info(f"Ingesting job '{source}' ({suffix}) for user '{user_id}'")
 
@@ -210,50 +261,31 @@ def _worker():
             _update_job(job_id, f"error: {e}")
 
         finally:
+            # Held until the graph build finishes too, not just extraction. That
+            # costs nothing in peak disk (every queued job already has its temp
+            # copy on disk from enqueue time) and it is what makes crash recovery
+            # work: _requeue_recovered_jobs re-runs the whole job from tmp_path,
+            # which used to be deleted the moment extraction ended.
             if suffix != ".url" and not job.get("is_string"):
                 try:
                     os.remove(tmp_path)
-                except Exception:
-                    pass
+                except OSError as e:
+                    logger.warning(f"Could not remove temp file for '{source}': {e}")
+
+            # The job is completely over — extraction and graph build both — so
+            # hand the GPU back to queries. An ingest that touched the vision
+            # model leaves it resident holding 7.3GB, with the answer model
+            # evicted to make room, so without this the next question pays a
+            # cold load. Runs on this worker thread, where no user is waiting.
+            # See utils/ollama_client.py::restore_query_models for the measured
+            # eviction trace and why serializing the calls would not have helped.
+            try:
+                restore_query_models()
+            except Exception as e:
+                logger.warning(f"Could not restore query models after '{source}': {e}")
+
+            _set_current_job(None)
             _queue.task_done()
-
-
-# -- Graph build worker -----------------------------------------------------
-# Runs on its own thread/queue, separate from ingestion, so multiple sources'
-# graph builds never run concurrently and contend for qwen2.5:3b.
-def _graph_worker() -> None:
-    """Background thread that runs enqueued graph-build callbacks one at a time."""
-    while True:
-        build_fn = _graph_queue.get()
-        if build_fn is None:
-            break
-        try:
-            build_fn()
-        except Exception as e:
-            logger.error(f"Graph build job failed: {e}")
-        finally:
-            _graph_queue.task_done()
-
-
-def enqueue_graph_build(job_id: str | None, build_fn) -> None:
-    """
-    Queue a source's graph build to run sequentially behind any others already
-    waiting. Marks the job "waiting_for_graph" immediately — build_fn itself
-    (BaseIngestor._build_graph_background) transitions it to "building_graph"
-    then "done" once the worker actually picks it up.
-    """
-    if job_id:
-        _update_job(job_id, "waiting_for_graph")
-    _graph_queue.put(build_fn)
-
-
-def start_graph_queue() -> None:
-    """Start the graph build worker thread. Call once on app startup."""
-    global _graph_worker_thread
-    if _graph_worker_thread is None or not _graph_worker_thread.is_alive():
-        _graph_worker_thread = threading.Thread(target=_graph_worker, daemon=True)
-        _graph_worker_thread.start()
-        logger.info("Graph build queue worker started")
 
 
 # -- Public API ------------------------------------------------------------
@@ -427,13 +459,40 @@ def find_active_job(source: str, user_id: str) -> dict | None:
         return _find_active_job(source, user_id)
 
 
+def active_sources(user_id: str) -> set[str]:
+    """
+    Source names that still have a job in flight for this user.
+
+    The queue status file is the authority on "is this source finished". A job
+    stores its chunks in ChromaDB minutes before the graph build that completes
+    it, so retrieval has to exclude these explicitly — otherwise a document the
+    UI is still showing as in-progress can answer a question with a partial
+    graph behind it. Read once per query in `search_candidates()`.
+    """
+    with _status_lock:
+        return {
+            job["source"]
+            for job in _load_status()
+            if job.get("user_id") == user_id
+            and job.get("source")
+            and job.get("status") in _ACTIVE_STATUSES
+        }
+
+
 def is_cancelled(job_id: str) -> bool:
     """Check whether a job has been marked cancelled. Used by ingestors to abort
-    long-running extraction loops early once cancellation is requested."""
+    long-running extraction loops early once cancellation is requested.
+
+    A missing record counts as cancelled. It used to return False, which meant
+    clear_completed() deleting a cancelled-but-still-running job's record turned
+    every later poll into "keep going": the build ran to completion, the cleanup
+    never fired, and the source became queryable with a half-written graph.
+    """
     for job in _load_status():
         if job["id"] == job_id:
             return job.get("status") == "cancelled"
-    return False
+    logger.warning(f"Job '{job_id}' has no status record - treating as cancelled")
+    return True
 
 
 def get_status() -> list:
@@ -446,13 +505,21 @@ _CLEARABLE_STATUSES = {"done", "cancelled"}
 
 def clear_completed() -> None:
     """Remove done, cancelled, and errored jobs from the status file.
-    This only affects the display queue — it never touches ChromaDB or the graph."""
+
+    This only affects the display queue - it never touches ChromaDB or the graph.
+
+    The job the worker currently owns is kept even when its status is clearable.
+    Cancellation is cooperative, so a job sits at "cancelled" while it is still
+    running; deleting that record left the worker unable to see it had been
+    cancelled, and the source went on to finish and become queryable.
+    """
     with _status_lock:
-        status = _load_status()
+        running = _current_job_id
         _save_status(
             [
                 j
-                for j in status
-                if j["status"] not in _CLEARABLE_STATUSES and not j["status"].startswith("error")
+                for j in _load_status()
+                if j["id"] == running
+                or (j["status"] not in _CLEARABLE_STATUSES and not j["status"].startswith("error"))
             ]
         )

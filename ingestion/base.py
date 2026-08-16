@@ -2,14 +2,13 @@ import sqlite3
 import time
 import uuid
 from abc import ABC, abstractmethod
-from functools import partial
 from pathlib import Path
 
 from config.logging import setup_logging
 from config.models import get_model
 from config.paths import KNOWLEDGE_GRAPH_DB_PATH
-from config.settings import EMBED_BATCH_SIZE
-from ingestion.queue import _update_job, enqueue_graph_build, is_cancelled, update_job_estimate
+from config.settings import EMBED_BATCH_SIZE, GRAPH_SECONDS_PER_CHUNK
+from ingestion.queue import _update_job, is_cancelled, update_job_estimate, update_job_progress
 from retrieval.embed import chunk_text, embed, embed_batch
 from retrieval.graph import build_from_chunks
 from utils.cache import clear_cache
@@ -44,60 +43,71 @@ class BaseIngestor(ABC):
         pass
 
     # -- Shared logic ----------------------------------------------------------
-    def store(self, chunks: list[str], source: str, metadata: dict | None = None) -> int:
-        """Embed and store chunks in ChromaDB. Returns number of chunks stored."""
+    def embed_chunks(self, chunks: list[str], source: str) -> list[list[float]]:
+        """Embed every chunk up front, raising on the first failure.
+
+        Separate from store() so a re-ingest can prove the new content embeds
+        before delete_source() removes the old. Swallowing these failures meant a
+        transient Ollama fault mid-re-ingest destroyed a working document and
+        stored nothing in its place.
+        """
+        embeddings: list[list[float]] = []
+        for batch_start in range(0, len(chunks), EMBED_BATCH_SIZE):
+            if self.job_id and is_cancelled(self.job_id):
+                logger.info(f"Ingestion of '{source}' cancelled - stopping chunk processing")
+                raise IngestionCancelled(f"Ingestion of '{source}' was cancelled")
+
+            batch = chunks[batch_start : batch_start + EMBED_BATCH_SIZE]
+            batch_embeddings = embed_batch(batch)
+            if len(batch_embeddings) != len(batch) or any(e is None for e in batch_embeddings):
+                raise RuntimeError(
+                    f"embed_batch returned {len(batch_embeddings)} embeddings for "
+                    f"{len(batch)} chunks of '{source}' at offset {batch_start}"
+                )
+            embeddings.extend(batch_embeddings)
+        return embeddings
+
+    def store(
+        self,
+        chunks: list[str],
+        source: str,
+        metadata: dict | None = None,
+        embeddings: list[list[float]] | None = None,
+    ) -> int:
+        """Store pre-embedded chunks in ChromaDB. Returns number of chunks stored.
+
+        `embeddings` is computed by embed_chunks() when omitted; callers that must
+        not lose existing data pass their own, already-validated list.
+        """
         base_meta = {"source": source, "user_id": self.user_id}
         if metadata:
             base_meta.update(metadata)
 
+        if embeddings is None:
+            embeddings = self.embed_chunks(chunks, source)
+
         stored = 0
-        # Batch embeddings and batched upserts to ChromaDB for efficiency
         for batch_start in range(0, len(chunks), EMBED_BATCH_SIZE):
             if self.job_id and is_cancelled(self.job_id):
-                logger.info(f"Ingestion of '{source}' cancelled — stopping chunk processing")
+                logger.info(f"Ingestion of '{source}' cancelled - stopping chunk processing")
                 raise IngestionCancelled(f"Ingestion of '{source}' was cancelled")
 
             batch_chunks = chunks[batch_start : batch_start + EMBED_BATCH_SIZE]
-            try:
-                embeddings = embed_batch(batch_chunks)
-            except Exception as e:
-                logger.error(f"embed_batch failed for '{source}' at start {batch_start}: {e}")
-                embeddings = [None] * len(batch_chunks)
+            batch_embeddings = embeddings[batch_start : batch_start + EMBED_BATCH_SIZE]
 
             ids = [str(uuid.uuid4()) for _ in batch_chunks]
             metadatas = [
                 {**base_meta, "chunk_index": batch_start + idx} for idx in range(len(batch_chunks))
             ]
 
-            # Filter out any None embeddings and attempt to add in a single call
-            valid_docs = []
-            valid_metas = []
-            valid_embs = []
-            valid_ids = []
-            for i, (chunk_txt, emb, _id, meta) in enumerate(
-                zip(batch_chunks, embeddings, ids, metadatas)
-            ):
-                if emb is None:
-                    logger.error(
-                        f"Missing embedding for chunk {batch_start + i} of '{source}' — skipping"
-                    )
-                    continue
-                valid_docs.append(chunk_txt)
-                valid_metas.append(meta)
-                valid_embs.append(emb)
-                valid_ids.append(_id)
-
-            if not valid_docs:
-                continue
-
             try:
                 self.collection.add(
-                    embeddings=valid_embs,
-                    documents=valid_docs,
-                    metadatas=valid_metas,
-                    ids=valid_ids,
+                    embeddings=batch_embeddings,
+                    documents=batch_chunks,
+                    metadatas=metadatas,
+                    ids=ids,
                 )
-                stored += len(valid_docs)
+                stored += len(batch_chunks)
             except Exception as e:
                 logger.error(f"Failed batched store for '{source}' at start {batch_start}: {e}")
 
@@ -130,6 +140,16 @@ class BaseIngestor(ABC):
             return
         update_job_estimate(self.job_id, seconds)
 
+    def _set_progress(self, current: int, total: int, unit: str = "page") -> None:
+        """Report "unit `current` of `total`" for the current job's active phase.
+
+        Only phases with a countable loop call this; the frontend falls back to its
+        time-based estimate wherever it stays absent.
+        """
+        if not self.job_id:
+            return
+        update_job_progress(self.job_id, current, total, unit)
+
     def _count_graph_items_for_source(self, source: str) -> tuple[int, int]:
         """Count graph nodes/edges for a source to report background build progress."""
         conn = sqlite3.connect(KNOWLEDGE_GRAPH_DB_PATH, timeout=30)
@@ -146,13 +166,40 @@ class BaseIngestor(ABC):
         finally:
             conn.close()
 
-    def _build_graph_background(self, chunks: list[str], source: str) -> None:
-        """Build the knowledge graph asynchronously so ingestion can finish quickly."""
-        logger.info(f"Building knowledge graph for '{source}' in background...")
-        self._update_job_status("building_graph")
+    def _cleanup_partial(self, source: str, reason: str) -> None:
+        """Remove everything a job that did not reach "done" had already written.
+
+        "Cancelled" and "failed" are defined the same way — leave nothing behind —
+        so a job stopped partway must not leave half a document queryable: chunks,
+        summary, whatever graph rows landed, the cache and the stored original all
+        go. Safe to call after DELETE /documents/{source} has already run its own
+        delete_source(); the second call simply finds nothing.
+
+        Named for the outcome rather than for cancellation since 2026-08-16, when
+        the failing graph build started using it too — see `_build_graph`.
+        """
+        try:
+            delete_source(source, self.user_id)
+            logger.info(f"Removed partial data for {reason} '{source}'")
+        except Exception as e:
+            logger.error(f"Cleanup after {reason} '{source}' failed: {e}")
+
+    def _build_graph(self, chunks: list[str], source: str) -> None:
+        """Build the knowledge graph — the second half of the job, run inline on
+        the ingestion worker so the source isn't 'ready' until it finishes."""
+        # Checked before the status write: setting "building_graph" first would
+        # clobber a "cancelled" that landed during the handoff, and the check
+        # below would then never see it.
         if self.job_id and is_cancelled(self.job_id):
             logger.info(f"Graph build for '{source}' cancelled before starting")
+            self._cleanup_partial(source, "cancelled")
             return
+        logger.info(f"Building knowledge graph for '{source}'...")
+        # Set the estimate before the status flip so the frontend receives both in
+        # one poll and its progress bar doesn't animate the graph phase against a
+        # leftover extraction estimate.
+        self._set_estimate(len(chunks) * GRAPH_SECONDS_PER_CHUNK)
+        self._update_job_status("building_graph")
         start = time.time()
         try:
             # Polled per chunk so cancelling a build actually stops it. Without
@@ -164,11 +211,13 @@ class BaseIngestor(ABC):
                 source,
                 self.user_id,
                 should_stop=(lambda: is_cancelled(self.job_id)) if self.job_id else None,
+                on_progress=lambda done, total: self._set_progress(done, total, "chunk"),
             )
             if self.job_id and is_cancelled(self.job_id):
                 logger.info(f"Graph build for '{source}' cancelled mid-build")
                 # Leave the status as "cancelled" — marking it done here would
                 # tell the UI a build finished that the user stopped.
+                self._cleanup_partial(source, "cancelled")
                 return
             entities, relationships = self._count_graph_items_for_source(source)
             elapsed = time.time() - start
@@ -187,7 +236,20 @@ class BaseIngestor(ABC):
                 },
             )
         except Exception as e:
-            logger.error(f"Background knowledge graph build failed for '{source}': {e}")
+            logger.error(f"Knowledge graph build failed for '{source}': {e}")
+            # Clean up before writing the terminal status, exactly as the
+            # cancelled paths do. "error: ..." is not in _ACTIVE_STATUSES, so the
+            # moment it lands the source leaves active_sources() and becomes
+            # visible to retrieval, the picker and the sources list — with chunks,
+            # a summary and a *partially built* graph behind it. That is precisely
+            # the half-ready state merging the two queues was meant to eliminate,
+            # reached through the failure path instead of the happy one.
+            #
+            # Cost, accepted deliberately: a large document's extraction work is
+            # discarded when its graph build fails, and the user re-ingests. That
+            # is the same trade already accepted for cancellation, and it is the
+            # only way "a source exists" can keep meaning "a source is complete".
+            self._cleanup_partial(source, "failed")
             self._update_job_status(f"error: {e}")
 
     def ingest(
@@ -196,11 +258,16 @@ class BaseIngestor(ABC):
         source_name: str,
         metadata: dict | None = None,
     ) -> int:
-        """Full ingestion pipeline: extract -> chunk -> store -> summarize."""
+        """Full pipeline for one job: extract -> chunk -> store -> summarize ->
+        build the knowledge graph. Returns only once all of it is done, because
+        the job's queue slot is held for the whole thing."""
         if not str(source_path).startswith(("http://", "https://")):
             source_path = Path(source_path)
         logger.info(f"Ingesting '{source_name}' for user '{self.user_id}'")
-        self._update_job_status("ingesting")
+        # No status write here. The worker already set "ingesting" before importing
+        # this ingestor's heavy deps, and repeating it after that multi-second gap
+        # overwrote any "cancelled" the user set in between - the cancel was
+        # accepted, hidden in the UI, and then silently undone.
 
         try:
             # Extract text
@@ -219,6 +286,12 @@ class BaseIngestor(ABC):
             if metadata:
                 extra_meta.update(metadata)
 
+            # Embedded before the re-ingest delete below, never after. This raises
+            # on a transient Ollama fault, which aborts the job with the existing
+            # copy of the document still intact - deleting first meant one failed
+            # embed call destroyed a working source and stored nothing in its place.
+            embeddings = self.embed_chunks(chunks, source_name)
+
             # -- Re-ingestion cleanup --------------------------------------
             # Only wipe existing data when re-ingesting a known source.
             # For brand-new sources this would be a no-op on ChromaDB but
@@ -232,8 +305,7 @@ class BaseIngestor(ABC):
                 # so removing "the old source's file" would delete the current one.
                 delete_source(source_name, self.user_id, remove_file=False)
 
-            # Store chunks
-            stored = self.store(chunks, source_name, extra_meta)
+            stored = self.store(chunks, source_name, extra_meta, embeddings=embeddings)
             if stored <= 0:
                 self._update_job_status("error: no chunks stored")
                 return stored
@@ -245,8 +317,11 @@ class BaseIngestor(ABC):
             )
             summary = "".join(generate_stream(summary_prompt, model=get_model("summarize")))
             self.store_summary(summary, source_name)
-            self._update_job_status("ingested")
-            clear_cache(self.user_id)
+            # No status write here — extraction flows straight into the graph
+            # build, which owns the next transition. The cache is *not* cleared
+            # here either: retrieval excludes sources with an in-flight job, so
+            # nothing this source could mask is reachable yet. It is cleared
+            # once the job finishes, below.
             send_telemetry(
                 "ingest",
                 {
@@ -255,16 +330,37 @@ class BaseIngestor(ABC):
                 },
             )
 
-            # Phase 2: enqueue the graph build on the dedicated sequential queue
-            # (see ingestion/queue.py) instead of spawning our own thread, so
-            # concurrently-ingested sources don't all hit qwen2.5:3b at once.
-            enqueue_graph_build(
-                self.job_id, partial(self._build_graph_background, chunks, source_name)
-            )
+            # The graph build runs inline, on this same worker thread, as the rest
+            # of this job — the source is not "done" until it finishes. It used to
+            # be deferred onto a second queue so the source became queryable in
+            # seconds; that bought speed at the cost of a "queryable but the graph
+            # is still pending" state every layer of the app had to model.
+            self._build_graph(chunks, source_name)
+
+            # The job has left the active set, so retrieval can see this source
+            # from here on — which makes this, not the end of extraction, the
+            # moment every cached retrieval built without it goes stale. Runs
+            # for a failed graph build too: the status is terminal either way,
+            # so the source becomes visible either way. The cancelled paths
+            # don't reach here and don't need to — delete_source() clears the
+            # cache itself.
+            clear_cache(self.user_id)
 
             return stored
         except IngestionCancelled as e:
             logger.info(f"Ingestion of '{source_name}' cancelled: {e}")
             # Status was already set to "cancelled" by the cancel endpoint —
-            # don't overwrite it here.
+            # don't overwrite it here. The chunks stored before the cancellation
+            # landed do have to go, though.
+            self._cleanup_partial(source_name, "cancelled")
             return 0
+        except Exception as e:
+            # Everything between store() and _build_graph() used to run unguarded:
+            # the summary call is a live Ollama request, and a raise there left the
+            # chunks in ChromaDB while the worker wrote a *terminal* error status.
+            # Terminal means the source leaves the active set, so it immediately
+            # became queryable with no summary and no graph. _build_graph has always
+            # cleaned up after itself; this closes the window before it.
+            logger.error(f"Ingestion of '{source_name}' failed: {e}")
+            self._cleanup_partial(source_name, "failed")
+            raise  # the worker owns the terminal "error: ..." status
