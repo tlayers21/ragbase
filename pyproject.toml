@@ -43,7 +43,18 @@ dependencies = [
 [dependency-groups]
 dev = [
     "ruff>=0.15.21",
+    "pytest>=8.0.0",
+    # api/title.py's endpoint is async, and the threading test drives it directly
+    "pytest-asyncio>=0.24.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# Integration tests need a live Ollama and a warm backend, so a bare `pytest` stays
+# fast and offline. Run them with `pytest -m integration`.
+addopts = "-m 'not integration'"
+markers = ["integration: requires a running Ollama and backend; writes to a probe source"]
 
 [tool.ruff]
 line-length = 100

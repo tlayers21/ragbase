@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.pyo
 .ruff_cache/
+.pytest_cache/
 # Logs
 logs/
 # Data (generated/personal, not source code)
