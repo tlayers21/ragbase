@@ -93,18 +93,29 @@ async def list_documents():
     """
     collection = get_collection(USER_ID)
     results = await asyncio.to_thread(lambda: collection.get(include=["metadatas"]))
+    extensions = await asyncio.to_thread(_stored_extensions)
+    in_flight = await asyncio.to_thread(active_sources, USER_ID)
     # Only chunk 0 of each source, so this stays one small query rather than pulling
     # every chunk's text just to read the first one.
+    #
+    # Read last on purpose. These reads are four separate points in time, not a
+    # snapshot, so a concurrent delete_source() can land between them - and a source
+    # that appeared in the metadatas read but has since lost its chunks came back as a
+    # phantom: a real chunk_count with an empty preview and an empty file_ext, which the
+    # UI rendered as an extra un-previewable card. Chunk 0 exists for every stored
+    # source, so making the *last* read the authority on existence means a source torn
+    # down mid-call drops out entirely instead of appearing half-built.
     first_chunks = await asyncio.to_thread(
         lambda: collection.get(where={"chunk_index": 0}, include=["documents", "metadatas"])
     )
-    extensions = await asyncio.to_thread(_stored_extensions)
-    in_flight = await asyncio.to_thread(active_sources, USER_ID)
 
     previews: dict[str, str] = {}
+    stored: set[str] = set()
     for text, meta in zip(first_chunks.get("documents") or [], first_chunks.get("metadatas") or []):
-        if isinstance(meta, dict) and meta.get("source") and text:
-            previews[meta["source"]] = text[:SOURCE_PREVIEW_CHARS]
+        if isinstance(meta, dict) and meta.get("source"):
+            stored.add(meta["source"])
+            if text:
+                previews[meta["source"]] = text[:SOURCE_PREVIEW_CHARS]
 
     # results["metadatas"] can be None when the collection is empty in some
     # ChromaDB versions. Guard against that and skip any malformed entries.
@@ -115,7 +126,7 @@ async def list_documents():
         if not isinstance(meta, dict):
             continue
         source = meta.get("source")
-        if not source or source in in_flight:
+        if not source or source in in_flight or source not in stored:
             continue
         sources.setdefault(source, []).append(meta)
 

@@ -1,7 +1,17 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { ChevronRight, X, Hourglass, AlertTriangle, Loader2, CheckCircle2, GitBranch } from "lucide-react";
+import {
+  ChevronRight,
+  X,
+  Hourglass,
+  AlertTriangle,
+  AlertCircle,
+  Loader2,
+  CheckCircle2,
+  GitBranch,
+  XCircle,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DropZone } from "@/components/sources/DropZone";
 import { generateTitle } from "@/lib/api";
@@ -369,6 +379,11 @@ export function SourcesPanel({
           pendingJobs.map((job) => {
             const isConfirming = pendingCancelId === job.id;
             const isFading = fadingJobIds.has(job.id);
+            // Every terminal status needs its own branch: the spinning fallback is for
+            // "ingesting" only. Without the two below, a cancelled or failed job kept a
+            // spinning loader next to the words "Cancelled" - a row that read as busy
+            // forever, and which the X button doesn't offer to dismiss because it is no
+            // longer cancellable.
             const jobIcon =
               job.status === "queued" ? (
                 <Hourglass className="h-4 w-4 text-yellow-500 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
@@ -376,6 +391,10 @@ export function SourcesPanel({
                 <CheckCircle2 className="h-4 w-4 text-green-500 flex-shrink-0 mt-0.5" />
               ) : job.status === "building_graph" ? (
                 <GitBranch className="h-4 w-4 text-blue-500 flex-shrink-0 mt-0.5" />
+              ) : job.status === "cancelled" ? (
+                <XCircle className="h-4 w-4 text-foreground-muted flex-shrink-0 mt-0.5" />
+              ) : job.status.startsWith("error") ? (
+                <AlertCircle className="h-4 w-4 text-destructive flex-shrink-0 mt-0.5" />
               ) : (
                 <Loader2 className="h-4 w-4 text-foreground-muted flex-shrink-0 mt-0.5 animate-spin" />
               );

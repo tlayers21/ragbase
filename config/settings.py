@@ -105,6 +105,13 @@ GRAPH_YIELD_MAX_SECONDS = 60.0
 # ahead or falls behind and shimmers - it never affects the build itself.
 GRAPH_SECONDS_PER_CHUNK = 8
 
+# -- Ingestion queue -----------------------------------------------------------
+# How long a finished row (done / cancelled / error) stays in the display queue before
+# get_status() drops it. Nothing else removes one: clear_completed() has no caller, and
+# restart recovery only rewrites active rows, so without a TTL a cancelled job sat in the
+# UI forever. Long enough to read the outcome, short enough to not accumulate.
+QUEUE_TERMINAL_ROW_TTL_SECONDS = 60
+
 # -- Ingestion -----------------------------------------------------------------
 VISION_TIMEOUT_SECONDS = 180
 OLLAMA_VISION_NUM_CTX = 8192

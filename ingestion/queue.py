@@ -3,12 +3,14 @@ import os
 import queue
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
 
 from config.logging import setup_logging
 from config.paths import QUEUE_STATUS_PATH
 from config.settings import (
+    QUEUE_TERMINAL_ROW_TTL_SECONDS,
     SUPPORTED_IMAGE_EXTENSIONS,
     SUPPORTED_OFFICE_EXTENSIONS,
     SUPPORTED_PDF_EXTENSIONS,
@@ -24,6 +26,15 @@ _queue = queue.Queue()
 _worker_thread = None
 
 _ACTIVE_STATUSES = {"queued", "ingesting", "building_graph"}
+
+# Statuses that mean the worker is done with a job. "error: <msg>" is terminal too but
+# carries the message, so it is matched by prefix rather than by membership.
+_CLEARABLE_STATUSES = {"done", "cancelled"}
+
+
+def _is_terminal(status: str) -> bool:
+    """Whether a status means the worker has finished with the job, one way or another."""
+    return status in _CLEARABLE_STATUSES or status.startswith("error")
 
 
 # -- Status file helpers ---------------------------------------------------
@@ -91,6 +102,13 @@ def _update_job(job_id: str, new_status: str) -> None:
                 # extraction stays on screen through the whole graph build and past
                 # "done", reading as a stalled job.
                 job.pop("progress", None)
+                # Stamp when the row became terminal so get_status() can expire it.
+                # Nothing else ever removes a finished row, so without this a cancelled
+                # or errored job stayed in the UI queue across every restart.
+                if _is_terminal(new_status):
+                    job["finished_at"] = time.time()
+                else:
+                    job.pop("finished_at", None)
                 break
         _save_status(status)
 
@@ -440,6 +458,11 @@ def cancel_job(job_id: str) -> bool:
         for job in status:
             if job["id"] == job_id and job.get("status") in _ACTIVE_STATUSES:
                 job["status"] = "cancelled"
+                job["finished_at"] = time.time()
+                # Same reason _update_job drops it on any status change: the counts belong
+                # to the phase that was interrupted, and leaving "chunk 9 of 19" beside
+                # "Cancelled" reads as a job that is still working.
+                job.pop("progress", None)
                 found = True
                 break
         if found:
@@ -468,14 +491,25 @@ def active_sources(user_id: str) -> set[str]:
     it, so retrieval has to exclude these explicitly - otherwise a document the
     UI is still showing as in-progress can answer a question with a partial
     graph behind it. Read once per query in `search_candidates()`.
+
+    A job the worker still owns counts as in flight even once it reads "cancelled",
+    because cancellation is cooperative: DELETE /documents/{source} flips the status
+    *before* it deletes the data, so for the length of that teardown the chunks are
+    still in ChromaDB. Treating the source as finished during that window is what let
+    GET /documents/ hand back a phantom entry - a real chunk_count with no preview and
+    no stored file - and let retrieval answer from a corpus being deleted underneath it.
     """
     with _status_lock:
+        running = _current_job_id
         return {
             job["source"]
             for job in _load_status()
             if job.get("user_id") == user_id
             and job.get("source")
-            and job.get("status") in _ACTIVE_STATUSES
+            and (
+                job.get("status") in _ACTIVE_STATUSES
+                or (job.get("status") == "cancelled" and job["id"] == running)
+            )
         }
 
 
@@ -496,11 +530,36 @@ def is_cancelled(job_id: str) -> bool:
 
 
 def get_status() -> list:
-    """Return current queue status for all jobs."""
-    return _load_status()
+    """
+    Return current queue status for all jobs, expiring long-finished rows first.
 
+    The sweep lives on the read path because that is the only code guaranteed to run:
+    the worker is idle once a job ends, and clear_completed() has no caller. A row that
+    reached "cancelled" or "error" otherwise persisted forever - across restarts too,
+    since _requeue_recovered_jobs() only rewrites active rows - which is how a cancelled
+    ingestion ended up pinned in the UI queue with no way to dismiss it.
 
-_CLEARABLE_STATUSES = {"done", "cancelled"}
+    Rows written before finished_at existed have no timestamp and are treated as long
+    expired, so any already-stuck row clears on the first poll after this ships.
+    """
+    cutoff = time.time() - QUEUE_TERMINAL_ROW_TTL_SECONDS
+    with _status_lock:
+        status = _load_status()
+        # The job the worker owns right now is kept regardless of status, for the same
+        # reason clear_completed() keeps it: a cooperatively cancelled job polls its own
+        # record to learn it should stop, and a job whose record vanished never stops.
+        running = _current_job_id
+        kept = [
+            job
+            for job in status
+            if job["id"] == running
+            or not _is_terminal(job.get("status", ""))
+            or job.get("finished_at", 0) > cutoff
+        ]
+        if len(kept) != len(status):
+            logger.info(f"Expired {len(status) - len(kept)} finished job row(s) from the queue")
+            _save_status(kept)
+        return kept
 
 
 def clear_completed() -> None:
@@ -519,7 +578,6 @@ def clear_completed() -> None:
             [
                 j
                 for j in _load_status()
-                if j["id"] == running
-                or (j["status"] not in _CLEARABLE_STATUSES and not j["status"].startswith("error"))
+                if j["id"] == running or not _is_terminal(j.get("status", ""))
             ]
         )

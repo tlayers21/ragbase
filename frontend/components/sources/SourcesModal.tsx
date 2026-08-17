@@ -558,6 +558,11 @@ interface SourcesModalProps {
   /** Every ingestion job; the active ones drive the In progress section. */
   jobs?: IngestionJob[];
   onCancelJob?: (jobId: string) => void;
+  /**
+   * Dismiss any queue rows belonging to a source that was just deleted. Keyed by
+   * source because DELETE /documents/{source} cancels the job without reporting its id.
+   */
+  onJobsInvalidated?: (source: string) => void;
 }
 
 export function SourcesModal({
@@ -566,6 +571,7 @@ export function SourcesModal({
   onSourcesChanged,
   jobs,
   onCancelJob,
+  onJobsInvalidated,
 }: SourcesModalProps) {
   const [sources, setSources] = useState<SourceSummary[]>([]);
   const [isLoadingSources, setIsLoadingSources] = useState(false);
@@ -624,12 +630,17 @@ export function SourcesModal({
         await apiDeleteSource(source);
         setSources((prev) => prev.filter((s) => s.source !== source));
         setConfirming(null);
+        // That endpoint cancels the job for us but returns no job id, so the queue row
+        // has to be hidden by source name. Without this, deleting a source mid-build
+        // left its now-"cancelled" row in the Ingest panel - the X button's cancel path
+        // hides the row itself, and this path used to skip that entirely.
+        onJobsInvalidated?.(source);
         onSourcesChanged?.();
       } catch {
         // keep confirming state so user can retry
       }
     },
-    [onSourcesChanged]
+    [onJobsInvalidated, onSourcesChanged]
   );
 
   const handleClose = useCallback(() => {

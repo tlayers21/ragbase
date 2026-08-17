@@ -5,7 +5,7 @@ import torch
 import whisper
 
 from config.logging import setup_logging
-from config.paths import SOURCES_DIR
+from config.paths import DATA_DIR, SOURCES_DIR
 from config.settings import VISION_TIMEOUT_SECONDS
 from retrieval.graph import delete_source as delete_graph_source
 from utils.cache import clear_cache
@@ -124,10 +124,30 @@ def delete_source(source: str, user_id: str, remove_file: bool = True) -> int:
 
     delete_graph_source(source, user_id)
     clear_cache(user_id)
+    _delete_progress_checkpoint(source)
     if remove_file:
         _delete_source_file(source, user_id)
 
     return deleted_count
+
+
+def _delete_progress_checkpoint(source: str) -> None:
+    """
+    Discard the scanned-PDF page-resume checkpoint for a source, if one is on disk.
+
+    `PdfIngestor` writes `data/{source}_progress.json` after every page so a long VLM
+    transcription can resume, and unlinks it only on success. A cancelled or failed run
+    therefore left it behind, and re-ingesting the same file resumed from the old page
+    offset - skipping pages that were never transcribed into the new run. Deleting the
+    source has to clear it too, since that is the point where its text stops existing.
+
+    Best-effort: most sources never create one.
+    """
+    checkpoint = DATA_DIR / f"{source}_progress.json"
+    try:
+        checkpoint.unlink(missing_ok=True)
+    except OSError as e:
+        logger.warning(f"Could not delete progress checkpoint {checkpoint}: {e}")
 
 
 def _delete_source_file(source: str, user_id: str) -> None:

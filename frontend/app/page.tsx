@@ -9,7 +9,7 @@ import { WarmupGate } from "@/components/layout/WarmupGate";
 import { useChat } from "@/hooks/useChat";
 import { useReadiness } from "@/hooks/useReadiness";
 import { useSources } from "@/hooks/useSources";
-import { useIngestion, isActiveStatus } from "@/hooks/useIngestion";
+import { useIngestion, isActiveStatus, isTerminalStatus } from "@/hooks/useIngestion";
 import type { PendingAttachment } from "@/types";
 
 export default function HomePage() {
@@ -29,6 +29,7 @@ export default function HomePage() {
     ingestText,
     ingestUrl,
     cancelJob,
+    hideJobsForSource,
   } = useIngestion(refreshSources);
 
   // Sources with a job still in flight - extraction or graph build, they're the
@@ -102,9 +103,7 @@ export default function HomePage() {
     let needsRefresh = false;
     for (const job of jobs) {
       const prev = prevJobStatusesRef.current.get(job.id);
-      const isTerminal =
-        job.status === "done" || job.status === "cancelled" || job.status.startsWith("error");
-      if (prev !== job.status && isTerminal) {
+      if (prev !== job.status && isTerminalStatus(job.status)) {
         needsRefresh = true;
       }
       prevJobStatusesRef.current.set(job.id, job.status);
@@ -232,6 +231,7 @@ export default function HomePage() {
           onSourcesChanged={refreshSources}
           jobs={jobs}
           onCancelJob={cancelJob}
+          onJobsInvalidated={hideJobsForSource}
         />
       </div>
     </>

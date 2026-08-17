@@ -23,6 +23,17 @@ export function isActiveStatus(status: string): boolean {
   return ACTIVE_STATUSES.has(status);
 }
 
+/**
+ * Whether the worker has finished with a job, successfully or not.
+ *
+ * Mirrors `_is_terminal` in `ingestion/queue.py`; `error: <msg>` carries its message,
+ * so it is matched by prefix. Not simply `!isActiveStatus` - an unrecognised status
+ * from a newer backend should read as in-progress rather than silently finished.
+ */
+export function isTerminalStatus(status: string): boolean {
+  return status === "done" || status === "cancelled" || status.startsWith("error");
+}
+
 function hasActiveJobs(jobs: IngestionJob[]): boolean {
   return jobs.some((j) => isActiveStatus(j.status));
 }
@@ -113,10 +124,13 @@ export function useIngestion(onComplete?: () => void) {
     };
   }, [startPolling]);
 
-  // Auto-fade done jobs: 30s -> opacity-0 (1s transition) -> remove from display
+  // Auto-fade finished jobs: 30s -> opacity-0 (1s transition) -> remove from display.
+  // Every terminal status fades, not just "done". Cancelled and errored rows used to be
+  // excluded, so they sat in the panel indefinitely with no way to dismiss them - the X
+  // button is only rendered for cancellable (i.e. still active) jobs.
   useEffect(() => {
     for (const job of jobs) {
-      if (job.status !== "done") continue;
+      if (!isTerminalStatus(job.status)) continue;
       if (processedDoneIds.current.has(job.id)) continue;
       processedDoneIds.current.add(job.id);
       const id = job.id;
@@ -231,6 +245,19 @@ export function useIngestion(onComplete?: () => void) {
     [startPolling]
   );
 
+  // Deleting a source goes through the documents API, which cancels the job for us but
+  // never tells the caller its id - so the delete path had no way to hide the row the
+  // way cancelJob does, and a source deleted mid-build left its "cancelled" row on
+  // screen. Match by source name instead, which is what the caller does have.
+  const hideJobsForSource = useCallback(
+    (source: string) => {
+      const ids = jobs.filter((j) => j.source === source).map((j) => j.id);
+      if (ids.length === 0) return;
+      setHiddenJobIds((prev) => new Set([...prev, ...ids]));
+    },
+    [jobs]
+  );
+
   const activeJobCount = jobs.filter((j) => isActiveStatus(j.status)).length;
 
   return {
@@ -244,5 +271,6 @@ export function useIngestion(onComplete?: () => void) {
     ingestText,
     ingestUrl,
     cancelJob,
+    hideJobsForSource,
   };
 }
