@@ -51,6 +51,11 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Puts the repo root on sys.path so `import config`/`import ingestion` resolve under a
+# plain `pytest`. Without it only `tests/` lands on the path (there is no tests/__init__.py),
+# and collection dies with ModuleNotFoundError. Do not rely on the editable install for
+# this — it is a side effect of how the venv happens to be built, not a guarantee.
+pythonpath = ["."]
 # Integration tests need a live Ollama and a warm backend, so a bare `pytest` stays
 # fast and offline. Run them with `pytest -m integration`.
 addopts = "-m 'not integration'"
