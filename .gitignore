@@ -39,7 +39,7 @@ wandb/
 frontend/public/pdf.worker.min.mjs
 ragbase.egg-info/
 .frontend_build_hash
-scripts/metrics.ipynb
+scripts/metrics.py
 # Agent / editor configuration
 .ai/
 .claude/
