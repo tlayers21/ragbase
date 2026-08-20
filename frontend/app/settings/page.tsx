@@ -20,12 +20,11 @@ export default function SettingsPage() {
   } = useSettings();
   const [localDisplayName, setLocalDisplayName] = useState(displayName);
   const [localApiUrl, setLocalApiUrl] = useState(apiUrl);
-  // Tracks the drag so the readout moves with the thumb; the commit happens on
-  // release, in setRerankerPercent.
+  // Tracks the drag so the readout follows the thumb - the commit is on release
   const [localRerankerPercent, setLocalRerankerPercent] = useState(rerankerPercent);
   const [saved, setSaved] = useState(false);
 
-  // Sync once the backend-fetched values arrive.
+  // Sync once the backend-fetched values arrive
   useEffect(() => setLocalDisplayName(displayName), [displayName]);
   useEffect(() => setLocalApiUrl(apiUrl), [apiUrl]);
   useEffect(() => setLocalRerankerPercent(rerankerPercent), [rerankerPercent]);

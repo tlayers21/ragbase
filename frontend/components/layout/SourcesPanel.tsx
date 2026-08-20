@@ -17,15 +17,10 @@ import { DropZone } from "@/components/sources/DropZone";
 import { generateTitle } from "@/lib/api";
 import type { IngestionJob } from "@/types";
 
-// Cancellable for its whole life, graph build included: the job holds the single
-// worker until it's done, so stopping it is the only way to get the queue back.
-// Cancelling discards the source's data - see the confirm copy below.
+// Cancellable for its whole life - the job holds the single worker until done
 const CANCELLABLE_STATUSES = new Set(["queued", "ingesting", "building_graph"]);
 
-// One bar across the whole job, split into the two phases it actually has. The
-// bar only ever moves forward: extraction fills the first stretch, the graph
-// build the second, and `done` fills it. Both animate against the job's
-// estimated_seconds, which the backend rewrites at the phase boundary.
+// One forward-only bar across both phases, against a backend-rewritten estimate
 const PROGRESS_BANDS: Record<string, [number, number]> = {
   ingesting: [10, 60],
   building_graph: [60, 95],
@@ -43,8 +38,7 @@ function slugify(text: string): string {
     .slice(0, 100);
 }
 
-// "Page 3 of 4" / "Chunk 40 of 210" - null whenever the phase has nothing
-// countable to report, which is most of them (see IngestionJob.progress).
+// "Page 3 of 4" - null whenever the phase has nothing countable to report
 function progressLabel(job: IngestionJob): string | null {
   const p = job.progress;
   if (!p || p.total <= 0) return null;
@@ -60,23 +54,14 @@ function PendingJobProgress({ job }: { job: IngestionJob }) {
   const counted = progressLabel(job);
   const band = PROGRESS_BANDS[status];
 
-  // Two mutually exclusive ways to fill the bar, and they must stay that way. When
-  // the backend reports real counts the bar is driven straight off them; otherwise
-  // it animates against estimated_seconds below. Running both would mean re-arming
-  // the rAF easing on every 2s poll, and since the effect resets to the band floor
-  // each time it re-runs, the bar would visibly jump backwards once per poll.
+  // Mutually exclusive - running both re-arms the easing and jumps the bar backwards
   const dataDriven = counted !== null && band !== undefined;
   const rawFillPct =
     dataDriven && job.progress
       ? band[0] + (job.progress.current / job.progress.total) * (band[1] - band[0])
       : barPct;
 
-  // The two fills are computed independently, so the handover moves the bar backwards:
-  // a PDF eased to ~35% against its estimate drops to 10.5% the instant the backend
-  // reports "page 1 of 100". One mark spans the whole job because the bands ascend,
-  // so a status change's reset to the new floor is absorbed rather than shown.
-  // Writing during render is safe: Math.max is idempotent, and the row is keyed by
-  // job.id, so a new job remounts with a fresh mark.
+  // A high-water mark, because the two fills are computed independently and can regress
   const highWater = useRef(0);
   highWater.current = Math.max(highWater.current, rawFillPct);
   const fillPct = highWater.current;
@@ -119,8 +104,7 @@ function PendingJobProgress({ job }: { job: IngestionJob }) {
   }
 
   if (status === "ingesting") {
-    // Real counts mean the bar can't be "over" its estimate - there's nothing left
-    // to guess at, so the uncertainty shimmer would be misleading.
+    // Real counts leave nothing to guess at, so the uncertainty shimmer would mislead
     const shimmer = !dataDriven && (overEstimate || !estimated_seconds);
     const phase =
       suffix === ".url" ? "Processing YouTube…"
@@ -142,9 +126,7 @@ function PendingJobProgress({ job }: { job: IngestionJob }) {
     );
   }
 
-  // Same blue bar as extraction, continuing up the track - this is the back half
-  // of one job, not a separate "already usable" state. Green is reserved for
-  // `done`, which is the only point at which the source is queryable.
+  // Still blue - green is reserved for `done`, the only point the source is queryable
   if (status === "building_graph") {
     const shimmer = !dataDriven && (overEstimate || !estimated_seconds);
     const label = counted
@@ -179,10 +161,7 @@ function PendingJobProgress({ job }: { job: IngestionJob }) {
   }
 
   if (status.startsWith("error")) {
-    // "error:" is the wire marker the panel branches on, not something worth
-    // showing - and yt-dlp's own messages already start with "ERROR:", so the row
-    // read "error: ERROR: [youtube] ...". The row is already red; strip both. The
-    // panel is 288px wide, so the full text lives in the tooltip.
+    // Strip both markers - the row is already red, and the full text is in the tooltip
     const detail = status.replace(/^error:\s*/i, "").replace(/^ERROR:\s*/, "").trim();
     return (
       <p className="text-[10px] text-red-500 truncate" title={detail}>
@@ -213,7 +192,9 @@ function TextIngestForm({
       const title = await generateTitle(text.trim());
       const slug = title ? slugify(title) : "";
       sourceName = slug || `text_${Date.now()}`;
-    } catch {
+    } catch (err) {
+      // A timestamped name is a usable fallback, but log why the real one is missing
+      console.warn("Source title generation failed, using a timestamped name", err);
       sourceName = `text_${Date.now()}`;
     }
 
@@ -379,11 +360,7 @@ export function SourcesPanel({
           pendingJobs.map((job) => {
             const isConfirming = pendingCancelId === job.id;
             const isFading = fadingJobIds.has(job.id);
-            // Every terminal status needs its own branch: the spinning fallback is for
-            // "ingesting" only. Without the two below, a cancelled or failed job kept a
-            // spinning loader next to the words "Cancelled" - a row that read as busy
-            // forever, and which the X button doesn't offer to dismiss because it is no
-            // longer cancellable.
+            // Each terminal status needs a branch - the spinner fallback is for "ingesting"
             const jobIcon =
               job.status === "queued" ? (
                 <Hourglass className="h-4 w-4 text-yellow-500 dark:text-yellow-400 flex-shrink-0 mt-0.5" />

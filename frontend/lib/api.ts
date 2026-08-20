@@ -1,7 +1,7 @@
 import { DEFAULT_API_URL } from "@/lib/config";
 import type { AttachmentType, HealthStatus, SourceSummary, IngestionStatus } from "@/types";
 
-// Read runtime overrides from localStorage (set on the settings page).
+// Read runtime overrides from localStorage (set on the settings page)
 function getBaseUrl(): string {
   if (typeof window === "undefined") return DEFAULT_API_URL;
   return localStorage.getItem("ragbase_api_url") ?? DEFAULT_API_URL;
@@ -16,7 +16,7 @@ export interface UserSettings {
   reranker_min_score: number;
 }
 
-// The backend owns the user identity - fetched once per session and cached.
+// The backend owns the user identity - fetched once per session and cached
 let cachedUserSettings: UserSettings | null = null;
 
 export async function fetchUserSettings(force = false): Promise<UserSettings> {
@@ -49,12 +49,9 @@ export async function setTelemetryEnabled(enabled: boolean): Promise<void> {
 }
 
 /**
- * Set the retrieval relevance floor, in raw reranker logits - convert from the
- * displayed percentage with `scoreFromRelevancePercent` before calling.
+ * Set the relevance floor in raw reranker logits, not the displayed percentage.
  *
- * Applies to the next query with no backend restart. The server also clears the
- * semantic cache, which would otherwise keep answering recent questions from
- * chunks selected under the old threshold.
+ * Applies to the next query, and the server clears the semantic cache too.
  */
 export async function setRerankerThreshold(minScore: number): Promise<void> {
   const res = await fetch(`${getBaseUrl()}/settings/reranker_threshold`, {
@@ -89,17 +86,10 @@ export function getSourceFileUrl(source: string): string {
 }
 
 /**
- * Same-origin URL for a stored source file, served straight off the Next.js
- * static mount (frontend/public/static/sources -> data/sources).
+ * Same-origin URL for a stored source file, off the Next.js static route.
  *
- * Previews and PDF rendering pull whole files - a 113MB PDF is in the test
- * corpus - and routing those through FastAPI put them behind the same server
- * that has to answer queries. Static serving takes the Python process out of the
- * path entirely, and being same-origin it also sidesteps the CORS-cache trap
- * that `/sources/{source}/file` needs `Vary: Origin` to survive.
- *
- * Returns null when the extension is unknown (no stored file), so callers fall
- * back to getSourceFileUrl().
+ * Returns null when the extension is unknown, so callers fall back to
+ * getSourceFileUrl().
  */
 export async function getStaticSourceFileUrl(
   source: string,
@@ -107,7 +97,7 @@ export async function getStaticSourceFileUrl(
 ): Promise<string | null> {
   if (!fileExt) return null;
   try {
-    // Cached after the first call - this does not re-hit the backend per source.
+    // Cached after the first call - this does not re-hit the backend per source
     const { user_id } = await fetchUserSettings();
     return `/static/sources/${encodeURIComponent(user_id)}/${encodeURIComponent(source)}${fileExt}`;
   } catch {
@@ -125,8 +115,7 @@ export async function fetchSourceText(source: string, signal?: AbortSignal): Pro
   return fetchTextFile(getSourceFileUrl(source), signal);
 }
 
-// HEADs the stored source file to sniff its Content-Type. The backend serves the
-// original upload, so the extension isn't recoverable from the source name alone.
+// HEADs the stored file - the extension is not recoverable from the source slug
 export async function fetchSourceType(
   source: string,
   signal?: AbortSignal
@@ -140,18 +129,15 @@ export async function fetchSourceType(
 }
 
 export async function generateChatTitle(message: string): Promise<string> {
-  try {
-    const res = await fetch(`${getBaseUrl()}/title`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message }),
-    });
-    if (!res.ok) return "";
-    const data = await res.json();
-    return (data.title as string) ?? "";
-  } catch {
-    return "";
-  }
+  const res = await fetch(`${getBaseUrl()}/title`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+  // Throws rather than returning "" - "" means the model produced no title
+  if (!res.ok) throw new Error(`generateChatTitle: ${res.status}`);
+  const data = await res.json();
+  return (data.title as string) ?? "";
 }
 
 // -- Documents ----------------------------------------------------------------
@@ -190,11 +176,7 @@ export interface StreamQueryHandlers {
   onDone: () => void;
 }
 
-// Parses SSE frames of the form "data: {token}\n\n", "data: [STAGE]{json}\n\n"
-// progress events, "data: [ATTACHMENTS]{json}\n\n" (attachment query only), a
-// "data: [SOURCES]{json}\n\n" citation event, a "data: [TIMING]{json}\n\n" server
-// timing event, and "data: [DONE]\n\n".
-// Shared by streamQuery(), streamDirectQuery(), and streamAttachmentQuery().
+// The one SSE parser, shared by every streaming call and matched to _sse_token
 async function consumeQueryStream(
   res: Response,
   handlers: StreamQueryHandlers,
@@ -210,10 +192,7 @@ async function consumeQueryStream(
 
   while (true) {
     const { done, value } = await reader.read();
-    // reader.cancel() (fired by the abort listener above) resolves the pending
-    // read() with done:true rather than rejecting it, so an abort must be
-    // detected here explicitly and re-thrown - otherwise this function just
-    // returns normally and the caller's AbortError handling never runs.
+    // reader.cancel() resolves read() with done:true rather than rejecting, so re-throw
     if (done) break;
     if (signal?.aborted) break;
     buffer += decoder.decode(value, { stream: true });
@@ -222,13 +201,10 @@ async function consumeQueryStream(
     buffer = frames.pop() ?? "";
 
     for (const frame of frames) {
-      // Strip only the SSE line framing - never trim the payload. Model tokens
-      // are frequently pure whitespace (" ") or carry a leading/trailing space,
-      // and trimming the frame silently drops them: a " " token became "" and
-      // was skipped entirely, rendering "12 multiplied by8 equals96".
+      // Never trim the payload - a " " token becomes "" and words run together
       const line = frame.replace(/^\n+/, "").replace(/\r$/, "");
       if (!line.startsWith("data:")) continue;
-      // Per the SSE spec a single space after "data:" is framing, not content.
+      // Per the SSE spec a single space after "data:" is framing, not content
       const payload = line.startsWith("data: ")
         ? line.slice("data: ".length)
         : line.slice("data:".length);
@@ -270,20 +246,15 @@ async function consumeQueryStream(
           const { server_ms } = JSON.parse(payload.slice("[TIMING]".length));
           if (typeof server_ms === "number") handlers.onTiming?.(server_ms);
         } catch {
-          // ignore malformed timing payload - the latency badge is cosmetic and
-          // must never cost the caller an answer it already received
+          // Ignore a malformed timing payload - the latency badge is cosmetic
         }
         continue;
       }
-      // Token frames are JSON-encoded strings (see _sse_token in api/query.py) so
-      // that newlines survive the blank-line frame delimiter and markdown lists,
-      // paragraphs and headings render as written. Any control frame was matched
-      // above, so anything reaching here is a token.
+      // Every control frame was matched above, so anything here is a JSON token
       try {
         handlers.onToken(JSON.parse(payload) as string);
       } catch {
-        // Tolerate an un-encoded payload rather than dropping the token outright
-        // (e.g. a frontend running against an older backend).
+        // Tolerate an un-encoded payload rather than dropping the token
         handlers.onToken(payload);
       }
     }
@@ -315,9 +286,7 @@ export async function streamQuery(
   await consumeQueryStream(res, handlers, signal);
 }
 
-// Bypasses the RAG pipeline entirely - used when the user has deselected
-// all sources ("direct LLM mode"). It still emits one [STAGE] event,
-// `generating`; it simply has no retrieval stages to report.
+// Bypasses retrieval entirely, emitting only the `generating` stage
 export async function streamDirectQuery(
   question: string,
   history: { role: string; content: string }[],
@@ -365,9 +334,7 @@ export interface AttachmentPayload {
   text?: string;
 }
 
-// Same RAG/direct routing as streamQuery/streamDirectQuery (controlled by
-// isDirect) but sends attachments as multipart and expects an extra
-// [ATTACHMENTS] event before generation begins.
+// Same routing as streamQuery, but multipart and with an extra [ATTACHMENTS] frame
 export async function streamAttachmentQuery(
   question: string,
   history: { role: string; content: string }[],
@@ -405,7 +372,7 @@ export async function ingestFile(
   const form = new FormData();
   form.append("file", file);
   form.append("source", sourceName);
-  // PDFs only - every other format ignores it server-side.
+  // PDFs only - every other format ignores it server-side
   form.append("describe_images", String(describeImages));
 
   const res = await fetch(`${getBaseUrl()}/ingest/file`, {
@@ -475,20 +442,10 @@ export async function compactMessages(
 }
 
 /**
- * Timestamp of the most recent `scripts/reset_all.sh` run, or null if the app has
- * never been reset.
+ * Timestamp of the most recent reset_all.sh run, or null if never reset.
  *
- * The caller compares this against the last value it acted on rather than trusting
- * a one-shot signal, so a reset reaches every browser rather than only whichever
- * tab asked first.
- *
- * **Throws when the backend is unreachable, and that distinction is the whole
- * point.** This used to swallow the error and return null, which is also what "no
- * reset has ever happened" looks like - so the caller treated a dead port as a
- * definitive "keep your history". reset_all.sh kills both servers and start.sh
- * waits only on :3000 before opening the browser, so the single call the app made
- * landed on a backend that was still importing torch, and the reset was silently
- * skipped every time. The caller retries on a throw; null means a real answer.
+ * Throws when the backend is unreachable, and that distinction is the point:
+ * null is a real answer, a throw means retry.
  */
 export async function fetchResetToken(): Promise<number | null> {
   const res = await fetch(`${getBaseUrl()}/sessions/should_reset`);

@@ -13,10 +13,9 @@ TELEMETRY_URL = "http://100.80.105.44:9000/telemetry"
 def send_telemetry(
     event_type: str, metadata: dict | None = None, device_id: str | None = None
 ) -> None:
-    """Fire-and-forget anonymous telemetry event to the Pi. Never blocks or raises.
+    """Fire-and-forget anonymous telemetry event to the Pi, never blocking or raising.
 
-    Payloads carry only the anonymous device_id - never the user_id or any
-    user content. Returns immediately if telemetry is disabled in settings.
+    Payloads carry the anonymous device_id only, never the user_id or any content.
     """
     if not is_telemetry_enabled():
         return

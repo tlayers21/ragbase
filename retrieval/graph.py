@@ -44,6 +44,15 @@ def _get_connection(user_id: str) -> sqlite3.Connection:
     return conn
 
 
+def graph_connection(user_id: str) -> sqlite3.Connection:
+    """Open the knowledge-graph DB for a user, validated and WAL-enabled.
+
+    The public entry point, so callers outside this module cannot bypass
+    _validate_user_id or the patchable DB_PATH.
+    """
+    return _get_connection(user_id)
+
+
 def _init_tables(conn: sqlite3.Connection, user_id: str) -> None:
     """Create graph tables and indexes if they don't exist."""
     conn.executescript(f"""
@@ -72,11 +81,10 @@ def _init_tables(conn: sqlite3.Connection, user_id: str) -> None:
 
 # -- Entity extraction -----------------------------------------------------
 def _strip_latex(text: str) -> str:
-    """Remove LaTeX math expressions before entity extraction. Also strips
-    chunks that are mostly garbled math notation, since malformed LaTeX
-    can break JSON generation regardless of escaping.
-    NOTE: brace/backslash stripping is lossy - also affects code snippets
-    and JSON strings embedded in text. Acceptable tradeoff for now."""
+    """Remove LaTeX math before entity extraction, since malformed LaTeX breaks JSON output.
+
+    Lossy: brace and backslash stripping also mangles embedded code and JSON strings.
+    """
     text = re.sub(r"\$[^$]{0,500}\$", "[math expression]", text)
     text = re.sub(r"\\[a-zA-Z]+", "", text)
     text = re.sub(r"[{}\\]", "", text)
@@ -188,24 +196,17 @@ def _validate_extracted(extracted: dict, source: str) -> dict:
 
 
 class EntityExtractionUnavailable(RuntimeError):
-    """The extraction *call* failed - Ollama timed out, refused, or is unreachable.
+    """The extraction call itself failed - Ollama timed out, refused, or is unreachable.
 
-    Distinct from a chunk the model answered badly, which is handled inline and
-    skipped. This one says nothing is wrong with the chunk and the next chunk will
-    almost certainly fail the same way, so `build_from_chunks` counts these and
-    gives up rather than grinding through the whole document one timeout at a time.
+    Distinct from a chunk the model answered badly, which is skipped inline.
     """
 
 
 def extract_entities(text: str, source: str) -> dict:
-    """
-    Use qwen2.5:3b via Ollama to extract entities and relationships from a text chunk.
-    Returns a dict with 'entities' and 'relationships' lists, validated so
-    every entry is safe to insert.
+    """Extract validated entities and relationships from one chunk via the fast model.
 
-    Raises EntityExtractionUnavailable if the model call itself fails. A chunk whose
-    output can't be parsed is not an error: it returns empty lists and the build
-    moves on, because one unparseable chunk says nothing about the next one.
+    Raises EntityExtractionUnavailable if the call fails; unparseable output returns empty
+    lists, because one bad chunk says nothing about the next.
     """
     text = _strip_latex(text)
 
@@ -224,10 +225,7 @@ Respond with valid JSON only in this exact format:
 
 Only include clear factual entities and relationships. Output JSON only, no explanation."""
 
-    # Split deliberately in two. Whatever the *call* raises is a health problem
-    # with Ollama and propagates; whatever *parsing* raises is a problem with this
-    # one chunk's output and is swallowed. Catching both together is what let a
-    # wedged model look identical to 155 unhelpful chunks.
+    # Split so a wedged model propagates while one chunk's bad output is swallowed
     try:
         raw = "".join(generate_stream(prompt, model=get_model("entity_extraction")))
     except Exception as e:
@@ -247,18 +245,10 @@ Only include clear factual entities and relationships. Output JSON only, no expl
 
 # -- Graph building --------------------------------------------------------
 def _yield_to_queries(source: str) -> None:
-    """
-    Pause the graph build while a query is being served.
+    """Pause the graph build while a query is being served.
 
-    Entity extraction is one qwen2.5:3b call per chunk against the same Ollama
-    process a query needs, so a build running through a large document visibly
-    slows every query the user makes in the meantime. Sleeping between chunks
-    hands the CPU (and Ollama's queue) to the request someone is actually waiting
-    on, at the cost of a build that finishes a little later - the graph is a
-    recall improvement, not something the UI blocks on.
-
-    Capped at GRAPH_YIELD_MAX_SECONDS so a flag left set by a crashed request
-    degrades into a slower build rather than one that never finishes.
+    Capped at GRAPH_YIELD_MAX_SECONDS so a flag left set by a crashed request degrades
+    into a slower build rather than one that never finishes.
     """
     if not is_query_in_progress():
         return
@@ -283,24 +273,10 @@ def build_from_chunks(
     should_stop: Callable[[], bool] | None = None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> None:
-    """
-    Extract entities and relationships from all chunks of a source
-    and store them in the knowledge graph.
-    Called automatically after ingestion.
+    """Extract entities and relationships from every chunk of a source into the graph.
 
-    `should_stop` is polled once per chunk and again right before that chunk's
-    inserts, so a cancelled or deleted source abandons the build instead of
-    writing rows for something that no longer exists.
-
-    `on_progress(done, total)` reports chunks completed. It is called only when the
-    integer percentage changes, not once per chunk: the caller's writer rewrites the
-    whole queue-status file under a lock the query path also contends for, and a
-    several-hundred-chunk build would otherwise do that several hundred times to move
-    a progress bar by less than a pixel.
-
-    Raises EntityExtractionUnavailable after GRAPH_MAX_CONSECUTIVE_FAILURES calls
-    fail in a row, which fails the job and frees the queue. See the constant for
-    why a per-call timeout alone is not enough.
+    `should_stop` is polled per chunk and again before its inserts; the build raises
+    EntityExtractionUnavailable after GRAPH_MAX_CONSECUTIVE_FAILURES calls fail in a row.
     """
     user_id = _validate_user_id(user_id)
     conn = _get_connection(user_id)
@@ -321,8 +297,7 @@ def build_from_chunks(
                 pct = done * 100 // len(chunks)
                 if pct != last_pct:
                     last_pct = pct
-                    # 1-based: the chunk about to be worked on, matching how the
-                    # PDF page loops report.
+                    # 1-based, matching how the PDF page loops report
                     on_progress(done + 1, len(chunks))
 
             _yield_to_queries(source)
@@ -339,19 +314,14 @@ def build_from_chunks(
                 continue
             consecutive_failures = 0
 
-            # Re-checked after extraction because extraction is the slow part
-            # (one LLM call, seconds). The delete path cancels the job and then
-            # removes this source's rows, so inserting on the strength of a
-            # check made an LLM call ago is how a deleted source ends up with
-            # orphaned nodes.
+            # Re-checked after the LLM call, or a deleted source gains orphaned nodes
             if should_stop is not None and should_stop():
                 stopped = True
                 break
 
             for entity in extracted.get("entities", []):
                 try:
-                    # INSERT OR IGNORE gives no signal on its own - compare
-                    # total_changes to count only rows actually inserted
+                    # INSERT OR IGNORE gives no signal - total_changes counts real inserts
                     changes_before = conn.total_changes
                     conn.execute(
                         f"INSERT OR IGNORE INTO nodes_{user_id} (entity, source) VALUES (?, ?)",
@@ -381,18 +351,7 @@ def build_from_chunks(
                 except Exception as e:
                     logger.warning(f"Failed to insert relationship: {e}")
 
-            # Commit per chunk, not once after the loop. SQLite allows exactly
-            # one writer, and a deferred transaction stays open from the first
-            # INSERT until the commit - batched across every chunk, that meant
-            # this worker held the write lock for the entire build (~20 min on a
-            # 140-chunk source), including through _yield_to_queries' sleeps.
-            # Any other writer, in practice delete_source(), then waited out its
-            # timeout=30 and raised "database is locked", so deleting a source
-            # mid-build returned a 500 and left it half-deleted - the Chroma
-            # chunks are removed first, so the source vanished from the UI while
-            # its graph rows survived. Committing here caps the lock at one
-            # chunk's inserts and makes the build durable incrementally rather
-            # than all-or-nothing.
+            # Per chunk - one deferred transaction holds SQLite's write lock all build
             conn.commit()
     finally:
         conn.close()

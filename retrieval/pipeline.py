@@ -1,8 +1,17 @@
 import dspy
 
 from config.logging import setup_logging
+from config.models import get_num_ctx
 from config.runtime import get_reranker_min_score
-from config.settings import RELEVANCE_SCALE_MIN, RERANKER_MAX_SCORE_GAP, TOP_K_CANDIDATES
+from config.settings import (
+    HISTORY_MESSAGE_MAX_CHARS,
+    HISTORY_TOKEN_BUDGET,
+    OLLAMA_TIMEOUT_SECONDS,
+    OLLAMA_URL,
+    RELEVANCE_SCALE_MIN,
+    RERANKER_MAX_SCORE_GAP,
+    TOP_K_CANDIDATES,
+)
 from ingestion.queue import active_sources
 from retrieval.graph import has_graph, query_related_sources
 from retrieval.reranker import rerank
@@ -19,21 +28,6 @@ class QueryRewriter(dspy.Signature):
     question: str = dspy.InputField(desc="The user's original question")
     history: str = dspy.InputField(desc="Recent conversation history for context", default="")
     rewritten_query: str = dspy.OutputField(desc="Optimized search query for retrieval")
-
-
-class RAGAnswerer(dspy.Signature):
-    """Answer a question using context chunks when available.
-    If no relevant context is provided, answer from your own knowledge.
-    Never reference 'the context', 'provided examples', 'the text', or where information
-    came from. Do not cite source document names inline. Weave information naturally
-    into your answer as if already known."""
-
-    question: str = dspy.InputField(desc="The user's question")
-    context: str = dspy.InputField(desc="Retrieved context chunks")
-    history: str = dspy.InputField(desc="Recent conversation history", default="")
-    answer: str = dspy.OutputField(
-        desc="Concise answer without inline source citations or context references"
-    )
 
 
 class TextCleanup(dspy.Signature):
@@ -79,56 +73,14 @@ class TranscriptionRefinement(dspy.Signature):
 
 
 class RAGPipeline(dspy.Module):
-    """
-    RAG pipeline:
-    1. Document-level retrieval (summaries)
-    2. Knowledge graph augmentation
-    3. Chunk-level hybrid search
-    4. Rerank
-    5. Threshold filter
-    6. Answer generation
+    """Retrieval pipeline: summaries, graph, hybrid search, rerank, threshold.
 
-    NOTE: self.rewriter (QueryRewriter) is retained but unused in forward() -
-    ml/collect_pairs.py and ml/eval.py still call pipeline.rewriter directly
-    to reproduce the retrieval path with a rewritten query for training data
-    collection and evaluation.
+    `self.rewriter` is unused here but retained - ml/collect_pairs.py and ml/eval.py call
+    it directly.
     """
 
     def __init__(self):
         self.rewriter = dspy.Predict(QueryRewriter)
-        self.answerer = dspy.Predict(RAGAnswerer)
-
-    def forward(
-        self,
-        question: str,
-        user_id: str,
-        history: list[dict] | None = None,
-        source_filter: list[str] | None = None,
-    ) -> dict:
-        history_str = format_history(history or [])
-
-        docs, metas, scores = self._retrieve(
-            query=question,
-            original_question=question,
-            user_id=user_id,
-            source_filter=source_filter,
-        )
-
-        # Step 6 - Answer generation
-        context = build_context(docs, metas)
-        answer = self.answerer(
-            question=question,
-            context=context,
-            history=history_str,
-        ).answer
-
-        sources = list({meta["source"] for meta in metas})
-
-        return {
-            "answer": answer,
-            "sources": sources,
-            "scores": scores,
-        }
 
     def retrieve_context(
         self,
@@ -137,10 +89,9 @@ class RAGPipeline(dspy.Module):
         history: list[dict] | None = None,
         source_filter: list[str] | None = None,
     ) -> dict:
-        """
-        Run retrieval only (no answer generation) so callers can stream the
-        answer themselves via generate_stream() instead of going through the
-        non-streaming DSPy answerer.
+        """Run retrieval only, so callers can stream the answer themselves.
+
+        Returns the same shape as a full answer minus the answer itself.
         """
         history_str = format_history(history or [])
 
@@ -167,23 +118,13 @@ class RAGPipeline(dspy.Module):
         user_id: str,
         source_filter: list[str] | None = None,
     ) -> tuple[list[str], list[dict]]:
-        """
-        Steps 1-3 of retrieval: document-level summary search, knowledge graph
-        augmentation, and chunk-level hybrid search. Returns raw (unranked)
-        candidate chunks. Split out from rerank_candidates() so callers (e.g.
-        the streaming API) can report progress between retrieval and rerank.
+        """Steps 1-3 of retrieval: summary search, graph augmentation, chunk-level hybrid search.
 
-        Sources with an in-flight ingestion job are excluded from all three
-        steps: a document is only finished once its graph build is, and until
-        then its chunks, summary and half-written graph rows must not answer
-        anything.
+        Returns unranked candidates, and excludes sources with an in-flight ingestion job.
         """
         excluded = active_sources(user_id)
 
-        # An explicit filter is narrowed rather than widened. Dropping the
-        # unfinished names and carrying on would let a filter that named *only*
-        # unfinished sources fall through to an unfiltered search, answering
-        # from documents the caller never asked about.
+        # Narrowed, never widened - an all-unfinished filter must not fall through
         if source_filter:
             source_filter = [s for s in source_filter if s not in excluded]
             if not source_filter:
@@ -194,26 +135,18 @@ class RAGPipeline(dspy.Module):
         relevant_sources = search_summaries(query, user_id)
         logger.info(f"Stage 1 found {len(relevant_sources)} relevant sources")
 
-        # Step 2 - Knowledge graph augmentation (skip when no graph built yet).
-        # Filtered here because the graph is read straight from SQLite, where a
-        # build in progress has already committed rows chunk by chunk.
+        # Step 2 - graph augmentation, filtered because SQLite already holds partial rows
         if has_graph(user_id):
             graph_sources = [s for s in query_related_sources(query, user_id) if s not in excluded]
             all_sources = list(set(relevant_sources + graph_sources))
         else:
             all_sources = relevant_sources
 
-        # Respect source filter if set; if stage 1 + graph found nothing inside
-        # the filter, fall back to searching the filtered sources directly
+        # Fall back to the filtered sources when stage 1 and the graph found nothing
         if source_filter:
             all_sources = [s for s in all_sources if s in source_filter] or source_filter
 
-        # Step 3 - Chunk-level hybrid search.
-        # n_results is TOP_K_CANDIDATES, not search()'s MAX_FINAL_RESULTS default:
-        # RRF fuses *ranks*, not relevance, so letting it cut 20 candidates down to
-        # 5 handed the reranker exactly as many chunks as it returns and reduced it
-        # to a reordering pass that discarded nothing. The cross-encoder is the only
-        # stage that judges relevance, so it has to see the full candidate pool.
+        # Step 3 - TOP_K_CANDIDATES so the cross-encoder sees the full candidate pool
         docs, metas = search(
             query=query,
             user_id=user_id,
@@ -228,19 +161,10 @@ class RAGPipeline(dspy.Module):
         docs: list[str],
         metas: list[dict],
     ) -> tuple[list[str], list[dict], list[float]]:
-        """
-        Step 4 of retrieval: rerank candidate chunks against the original question
-        and drop the ones that aren't relevant enough to cite or to prompt with.
+        """Step 4: rerank candidates and drop chunks too weak to cite or prompt with.
 
-        Two cutoffs, both in raw reranker logits. The absolute floor is user-tunable
-        from the settings slider (`get_reranker_min_score()`, defaulting to
-        RERANKER_MIN_SCORE) and is read per call so a change applies immediately.
-        RERANKER_MAX_SCORE_GAP is relative to the best chunk in *this* result set,
-        which catches the case the floor can't: every chunk clears the bar, but one is
-        far ahead and the rest are padding.
-
-        The surviving lists feed both the prompt and the [SOURCES] frame, so a chunk
-        dropped here is dropped from the answer and the sources panel together.
+        Two cutoffs in raw logits - the user-tunable absolute floor, read per call, and
+        RERANKER_MAX_SCORE_GAP relative to the best chunk in this result set.
         """
         if not docs:
             return [], [], []
@@ -251,12 +175,9 @@ class RAGPipeline(dspy.Module):
             metas=metas,
         )
 
-        # rerank() returns descending by score, so scores[0] is the best.
+        # rerank() returns descending by score, so scores[0] is the best
         min_score = get_reranker_min_score()
-        # At the bottom of the display scale the slider means "show me everything",
-        # so the relative cutoff is bypassed too. Leaving it armed there would still
-        # drop the weak stragglers it exists to catch, and the slider would look
-        # broken at exactly the end where the user asked for more, not less.
+        # At the bottom of the scale the slider means "show everything", gap included
         if min_score <= RELEVANCE_SCALE_MIN:
             floor = min_score
         else:
@@ -290,15 +211,43 @@ class RAGPipeline(dspy.Module):
 
 
 # -- Helpers ---------------------------------------------------------------
-def format_history(history: list[dict]) -> str:
-    """Format chat history as a readable string for context."""
+def _history_label(msg: dict) -> str:
+    """Prompt label for one history message."""
+    role = msg.get("role")
+    if role == "user":
+        return "User"
+    if role == "system":
+        return "Earlier conversation summary"
+    return "Assistant"
+
+
+def format_history(history: list[dict], budget: int = HISTORY_TOKEN_BUDGET) -> str:
+    """Format chat history as prompt text, newest-first up to a token budget.
+
+    A compaction summary is pinned regardless of age, since dropping it would
+    discard the only record of everything it replaced.
+    """
     if not history:
         return ""
-    lines = []
-    for msg in history[-6:]:  # last 3 turns
-        role = "User" if msg["role"] == "user" else "Assistant"
-        lines.append(f"{role}: {msg['content'][:300]}")
-    return "\n".join(lines)
+
+    pinned, ordinary = [], []
+    for i, msg in enumerate(history):
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+        entry = (i, f"{_history_label(msg)}: {content[:HISTORY_MESSAGE_MAX_CHARS]}")
+        (pinned if msg.get("role") == "system" else ordinary).append(entry)
+
+    kept = list(pinned)
+    spent = sum(len(text) for _, text in pinned) // 4
+    for entry in reversed(ordinary):
+        cost = len(entry[1]) // 4
+        if spent + cost > budget:
+            break
+        kept.append(entry)
+        spent += cost
+
+    return "\n".join(text for _, text in sorted(kept))
 
 
 def build_context(docs: list[str], metas: list[dict]) -> str:
@@ -311,10 +260,9 @@ def build_context(docs: list[str], metas: list[dict]) -> str:
 
 
 def build_answer_prompt(question: str, context: str, history_str: str) -> str:
-    """
-    Construct a plain-text prompt mirroring the RAGAnswerer signature, for use
-    with generate_stream() directly when streaming (DSPy Predict itself does
-    not stream token-by-token).
+    """Construct the plain-text answer prompt for generate_stream().
+
+    Built as text rather than a DSPy signature because dspy.Predict cannot stream.
     """
     history_block = f"\nConversation history:\n{history_str}\n" if history_str else ""
     return (
@@ -340,19 +288,10 @@ def build_direct_prompt(question: str, history_str: str) -> str:
 
 
 def build_explain_prompt(source: str, context: str, partial: bool = False) -> str:
-    """
-    Construct the prompt for explaining one whole source in depth.
+    """Construct the prompt for explaining one whole source in depth.
 
-    Unlike build_answer_prompt, the instruction here is fixed and the "context" is
-    the entire document rather than a handful of ranked excerpts - so this prompt
-    asks for a structured account of the material instead of an answer to
-    something. It also drops the "never narrate where information came from" rule,
-    which exists to stop citation-speak leaking into an answer: here the document
-    *is* the subject, and referring to it is correct.
-
-    `partial` is set on the reduce step, where `context` holds batch summaries
-    rather than raw chunks - the model is told so it does not describe the
-    summaries as though they were the document's own words.
+    `partial` marks the reduce step, where `context` holds batch summaries rather than raw
+    chunks, so the model does not present them as the document's own words.
     """
     material = (
         "section summaries of a document, in order" if partial else "the full text of a document"
@@ -369,14 +308,22 @@ def build_explain_prompt(source: str, context: str, partial: bool = False) -> st
     )
 
 
-def configure_dspy(ollama_url: str, model: str) -> None:
+def make_lm(model: str, ollama_url: str = OLLAMA_URL) -> dspy.LM:
+    """Build a dspy.LM carrying this model's window and the shared socket timeout.
+
+    DSPy reaches Ollama through LiteLLM rather than utils/ollama_client, so both have
+    to be passed explicitly or the call runs at Ollama's 4096 default with no timeout.
     """
-    Configure DSPy to use a local Ollama model.
-    Call this once on app startup before using RAGPipeline.
-    """
-    lm = dspy.LM(
+    return dspy.LM(
         model=f"ollama/{model}",
         api_base=ollama_url,
+        num_ctx=get_num_ctx(model),
+        timeout=OLLAMA_TIMEOUT_SECONDS,
     )
+
+
+def configure_dspy(ollama_url: str, model: str) -> None:
+    """Configure DSPy to use a local Ollama model, once on app startup."""
+    lm = make_lm(model, ollama_url)
     dspy.settings.configure(lm=lm)
     logger.info(f"DSPy configured with model '{model}' at {ollama_url}")

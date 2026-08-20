@@ -48,16 +48,11 @@ def _locate_source_file(source: str) -> tuple[Path, int] | None:
 
 @router.api_route("/{source}/file", methods=["GET", "HEAD"])
 async def get_source_file(source: str, request: Request):
-    """Serve the stored original file for a source. HEAD is supported for content-type sniffing.
+    """Serve the stored original for a source, HEAD included for content-type sniffing.
 
-    The frontend prefers the Next.js static route (/static/sources/...) for
-    previews and PDF rendering; this endpoint stays as the fallback for clients
-    that can't reach the static mount and as the authority on content type.
+    A fallback for clients that cannot reach the Next.js static route.
     """
-    # 409 while a job is in flight. The original is written by api/ingest.py
-    # *before* the job is enqueued, so it is servable from the moment the upload
-    # lands - which meant a source could be previewed while the app considered it
-    # unfinished and hid it everywhere else. 409, not 404: the file is there.
+    # 409 while in flight - the original is servable from upload, long before "done"
     await require_finished(source)
 
     located = await asyncio.to_thread(_locate_source_file, source)
@@ -70,12 +65,7 @@ async def get_source_file(source: str, request: Request):
         _KNOWN_MIME.get(suffix) or mimetypes.guess_type(str(path))[0] or "application/octet-stream"
     )
 
-    # This URL is fetched two ways: as a plain <img src> (no Origin header, so
-    # CORSMiddleware adds no Access-Control-Allow-Origin) and via fetch() (a CORS
-    # request that requires it). Without Vary the browser reuses the cached
-    # non-CORS response for the CORS request, which then fails the origin check -
-    # surfacing as a bogus "blocked by CORS policy" error on a file that serves
-    # fine. Varying on Origin keeps the two cache entries separate.
+    # Fetched both as <img src> and via fetch(), so the two cache entries must stay apart
     headers = {"Vary": "Origin"}
 
     if request.method == "HEAD":

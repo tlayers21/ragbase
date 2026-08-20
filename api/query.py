@@ -19,13 +19,14 @@ from config.settings import (
     ANSWER_THINKING_ENABLED,
     ATTACHMENT_TEXT_MAX_CHARS,
     EXPLAIN_BATCH_CHUNKS,
+    EXPLAIN_HEARTBEAT_SECONDS,
     EXPLAIN_MAX_CHUNKS,
     OLLAMA_KEEP_ALIVE,
     SUPPORTED_IMAGE_EXTENSIONS,
     SUPPORTED_PDF_EXTENSIONS,
 )
 from ingestion.helpers import describe_image
-from ingestion.queue import active_sources
+from ingestion.queue import active_sources, find_active_job
 from retrieval.embed import embed
 from retrieval.graph import has_graph
 from retrieval.pipeline import (
@@ -59,27 +60,9 @@ _SYSTEM_PROMPT = (
 
 
 def _answer_stream(prompt: str, system: str = _SYSTEM_PROMPT) -> Generator[str, None, None]:
-    """
-    The single entry point for every user-facing answer.
+    """The single entry point for every user-facing answer.
 
-    All six generation call sites in this module previously repeated
-    `system=_SYSTEM_PROMPT, model=get_model("answer")`; funnelling them through
-    here means the thinking toggle can't be applied to five of them and forgotten
-    on the sixth.
-
-    This is also the only place the answer model's long residency is renewed.
-    `generate_stream` leaves `keep_alive` unset by default because most of its
-    callers are ingestion-only tasks that should hand their runner slot back;
-    the answer model is the one that must still be resident when the user asks
-    their next question, however long they took to ask it.
-
-    `system` is overridable for the explain endpoint alone, which needs one that
-    permits long structured output. Everything else takes the defaults; a second
-    copy of the thinking toggle is exactly what this function exists to prevent.
-
-    The context window is not passed here. `generate_stream` applies the answer
-    model's own (config/models.py::get_num_ctx), which is what lets explain and an
-    ordinary question share one loaded runner instead of reloading between them.
+    Also the only place the answer model's long residency is renewed.
     """
     return generate_stream(
         prompt,
@@ -91,21 +74,15 @@ def _answer_stream(prompt: str, system: str = _SYSTEM_PROMPT) -> Generator[str, 
 
 
 async def _aiter_answer(prompt: str, system: str = _SYSTEM_PROMPT) -> AsyncGenerator[str, None]:
-    """
-    Pump `_answer_stream` without holding the event loop for the whole answer.
+    """Pump `_answer_stream` without holding the event loop for the whole answer.
 
-    `generate_stream` is a *blocking* generator, so `for token in _answer_stream(...)`
-    inside an `async def` never gives the loop a chance to run between tokens: no
-    frame reaches the client until generation finishes (the answer lands in one
-    burst instead of streaming) and every other in-flight SSE stream stalls behind
-    it. One `to_thread` per `next()` restores both. The sync `/query/direct`
-    generator does not need this - Starlette already iterates it in a threadpool.
+    One `to_thread` per `next()`, because a blocking generator inside an `async def`
+    stalls every other in-flight SSE stream until generation finishes.
     """
     gen = _answer_stream(prompt, system=system)
     sentinel = object()
     while True:
-        # Sequential awaits, so the generator is only ever advanced by one thread
-        # at a time even though the pool may hand out a different one each call.
+        # Sequential awaits, so only one thread ever advances the generator at a time
         token = await asyncio.to_thread(next, gen, sentinel)
         if token is sentinel:
             return
@@ -113,30 +90,19 @@ async def _aiter_answer(prompt: str, system: str = _SYSTEM_PROMPT) -> AsyncGener
 
 
 def _sse_token(token: str) -> str:
-    """Frame one model token as an SSE event.
+    """Frame one model token as an SSE event, JSON-encoded.
 
-    The token is JSON-encoded because SSE frames are delimited by a blank line and
-    answers are markdown: a raw ``\\n`` inside ``data: {token}\\n\\n`` collides with
-    that delimiter, so every newline token was silently swallowed and lists,
-    paragraphs and headings all collapsed onto one line. JSON escapes newlines to
-    ``\\n`` literals, so whitespace survives the wire intact. Control frames keep
-    their bare ``[MARKER]`` prefix, which stays unambiguous because a JSON-encoded
-    token always starts with a quote.
+    A raw newline in the payload would collide with the blank-line frame delimiter and
+    be swallowed; matched pair with the frontend's `consumeQueryStream`.
     """
     return f"data: {json.dumps(token)}\n\n"
 
 
 def _sse_timing(t0: float) -> str:
-    """Frame the server's own elapsed time as the final control event before [DONE].
+    """Frame the server's elapsed time as the last control event before [DONE].
 
-    Sent as elapsed milliseconds rather than a timestamp on purpose: the browser
-    would otherwise have to subtract a server clock from its own, and the two are
-    independent. Each side measures a delta against its own monotonic clock and the
-    frontend simply adds them, so skew never enters the number.
-
-    A separate frame rather than a payload on [DONE], because [DONE] is matched
-    exactly (``payload === "[DONE]"``) by the frontend parser and documented as a
-    bare marker in .ai/instructions.md section 5.
+    Milliseconds rather than a timestamp so no clock skew enters the number, and a
+    separate frame because the parser matches [DONE] exactly.
     """
     elapsed_ms = round((time.perf_counter() - t0) * 1000)
     return f"data: [TIMING]{json.dumps({'server_ms': elapsed_ms})}\n\n"
@@ -145,16 +111,10 @@ def _sse_timing(t0: float) -> str:
 async def _with_query_priority(
     stream: AsyncGenerator[str, None],
 ) -> AsyncGenerator[str, None]:
-    """
-    Flag the process as serving a query for as long as `stream` is producing.
+    """Flag the process as serving a query for as long as `stream` is producing.
 
-    The knowledge-graph worker polls this flag between entity extractions and
-    pauses while it is set, so a build in progress stops competing with the query
-    the user is actually waiting on (see retrieval/graph.py::_yield_to_queries).
-
-    Wrapping the generator rather than setting the flag in the endpoint is what
-    makes the clear reliable: the ``finally`` runs when the stream completes, when
-    it raises, and when the client disconnects and Starlette closes the generator.
+    Wraps the generator rather than the endpoint so the `finally` also runs when the
+    client disconnects mid-stream.
     """
     query_started()
     try:
@@ -167,30 +127,14 @@ async def _with_query_priority(
 def _fresh_cached_response(query_embedding: list[float]) -> dict | None:
     """A cached retrieval, unless it draws on a source that is mid-ingest.
 
-    The exclusion filter that keeps unfinished sources out of an answer lives in
-    `search_candidates()`, and a cache hit skips that entirely - so the cache was
-    the one path by which an in-flight source could still reach an answer.
-
-    Re-ingestion is where this bites. `ingest()` calls `delete_source()` (and so
-    `clear_cache()`) only *after* `extract_text()` returns, which on a large PDF
-    is minutes. For that whole window the job is active, the source's old chunks
-    are still in ChromaDB, and any cached entry naming it kept being served -
-    answering from the version of the document the user was replacing.
-
-    Dropping the entry rather than filtering its chunks is deliberate: the cached
-    `context` is an already-formatted string, so there is no honest way to remove
-    one source's contribution from it. A miss just runs the real pipeline, which
-    applies the exclusion properly.
+    A cache hit skips `search_candidates()`, so this is the only place the
+    unfinished-source exclusion can be applied to a cached entry.
     """
     cached = get_cached_response(USER_ID, query_embedding)
     if not cached:
         return None
 
-    # An entry with no context is a cached failure, not a cached answer: reranking
-    # dropped everything, and serving it replays that miss for the whole TTL even
-    # after the source it needed finishes ingesting. Keyed on `context` rather than
-    # `chunks` on purpose - entries written before chunks were stored have no
-    # `chunks` key but a perfectly good context, and must still be served.
+    # An empty context is a cached failure - serving it replays the miss for the TTL
     if not cached.get("context"):
         logger.info("Discarding cached retrieval - empty context, retrieval returned nothing")
         return None
@@ -229,7 +173,7 @@ async def query(req: QueryRequest):
     cached = _fresh_cached_response(query_embedding)
 
     if cached:
-        # Cache hit: reuse retrieved context, generate a fresh answer for the new question.
+        # Cache hit: reuse retrieved context, generate a fresh answer for the new question
         history_str = format_history(req.history)
         prompt = build_answer_prompt(req.question, cached["context"], history_str)
         answer = "".join(_answer_stream(prompt))
@@ -241,7 +185,7 @@ async def query(req: QueryRequest):
         )
         return QueryResponse(answer=answer, sources=cached["sources"], scores=cached["scores"])
 
-    # Cache miss: run full retrieval, then generate answer via generate_stream.
+    # Cache miss: run full retrieval, then generate answer via generate_stream
     retrieval = _pipeline.retrieve_context(
         question=req.question,
         user_id=USER_ID,
@@ -251,9 +195,7 @@ async def query(req: QueryRequest):
     prompt = build_answer_prompt(req.question, retrieval["context"], retrieval["history_str"])
     answer = "".join(_answer_stream(prompt))
 
-    # Same empty-retrieval guard as the streaming path. Unreachable today - the
-    # frontend only calls /query/stream - so this is insurance for whenever this
-    # endpoint gets a caller again, not a live fix.
+    # Same empty-retrieval guard as the streaming path, which is the only live caller
     if retrieval["context"]:
         set_cached_response(
             USER_ID,
@@ -284,14 +226,9 @@ async def query(req: QueryRequest):
 
 @router.post("/stream")
 async def query_stream(req: QueryRequest, request: Request) -> StreamingResponse:
-    """
-    Same retrieval as /query, but streams progress and the answer as
-    Server-Sent Events. `data: [STAGE]{"stage": ...}\\n\\n` events mark
-    retrieval/reranking/generation as they begin, followed by token events
-    (`data: {json-encoded token}\\n\\n`), a `data: [SOURCES]{json}\\n\\n` citation event,
-    a `data: [TIMING]{"server_ms": int}\\n\\n` event carrying this request's own
-    elapsed time, and `data: [DONE]\\n\\n`. `data: [HEARTBEAT]\\n\\n` keep-alive events
-    are emitted before each blocking call so the connection does not time out.
+    """Same retrieval as /query, but streams progress and the answer as Server-Sent Events.
+
+    Emits [STAGE], token, [SOURCES], [TIMING], [HEARTBEAT] and [DONE] frames.
     """
     t0 = time.perf_counter()
     logger.info(f"Streaming query: {req.question}")
@@ -301,12 +238,7 @@ async def query_stream(req: QueryRequest, request: Request) -> StreamingResponse
 
         yield f"data: [STAGE]{json.dumps({'stage': 'retrieving_sources'})}\n\n"
 
-        # The semantic cache is keyed on the query embedding, so a paraphrase of an
-        # earlier question reuses its retrieval and skips stages 1-4 entirely. Only
-        # the retrieval context is reused - the answer is always regenerated against
-        # the wording actually asked. Source-filtered queries bypass the cache: the
-        # cached context was built under a different filter and would leak chunks
-        # from sources the user has deselected.
+        # Filtered queries bypass the cache - it would leak deselected sources' chunks
         cached = None
         if not req.source_filter:
             query_embedding = await asyncio.to_thread(embed, req.question)
@@ -341,9 +273,7 @@ async def query_stream(req: QueryRequest, request: Request) -> StreamingResponse
                 for doc, meta, score in zip(docs, metas, scores)
             ]
 
-            # Don't cache a retrieval that found nothing - see _fresh_cached_response.
-            # Re-running the pipeline next time costs a few seconds; caching the miss
-            # costs every similar question for CACHE_TTL.
+            # Caching a miss would cost every similar question for CACHE_TTL
             if not req.source_filter and chunks:
                 await asyncio.to_thread(
                     set_cached_response,
@@ -388,13 +318,9 @@ async def query_stream(req: QueryRequest, request: Request) -> StreamingResponse
 
 @router.post("/direct")
 async def query_direct(req: QueryRequest) -> StreamingResponse:
-    """
-    Bypass the RAG pipeline entirely - no retrieval, reranking, or ChromaDB
-    queries. Sends the question straight to generate_stream() with qwen3.
-    Used when the user has deselected all sources ("direct LLM mode"), so
-    the response feels near-instant compared to the full pipeline. Same SSE
-    event format as /query/stream: it emits a single `generating` [STAGE] event
-    (there are no retrieval stages to report) and an empty [SOURCES].
+    """Answer without retrieval, using only the question and recent conversation history.
+
+    Same SSE frames as /query/stream, minus [SOURCES].
     """
     t0 = time.perf_counter()
     logger.info(f"Direct query (no RAG): {req.question}")
@@ -423,11 +349,7 @@ async def query_direct(req: QueryRequest) -> StreamingResponse:
 
 
 # -- Explain in depth ---------------------------------------------------------
-# The one query path that does no retrieval and no ranking. Every other endpoint
-# answers a question, so it wants the few chunks most relevant to that question;
-# this one describes a document, so relevance has nothing to rank and the whole
-# source is the input. That inverts every assumption in the pipeline, which is why
-# it builds its own context instead of reusing RAGPipeline.
+# Builds its own context rather than reusing RAGPipeline - there is no question to rank against
 _EXPLAIN_SYSTEM_PROMPT = (
     "You are a helpful AI assistant for a personal knowledge base. You are explaining "
     "one document from that knowledge base to its owner. Be thorough and well "
@@ -451,14 +373,7 @@ def _explain_context(chunks: list[tuple[str, dict]]) -> str:
 def _summarize_batch(chunks: list[tuple[str, dict]], source: str, part: int, total: int) -> str:
     """Map step: condense one batch of chunks so an oversized source still fits.
 
-    Runs on the fast model, not the answer model - this is a high-volume,
-    low-judgement job, and `generate_stream` would otherwise silently default to
-    qwen3 and make an already-slow path far slower.
-
-    `num_ctx` is mandatory here, not a tuning knob: a batch is several times Ollama's
-    default window, which truncates without erroring. Skipping it would mean summaries
-    built from the first third of each batch, and a final explanation confidently
-    describing a document most of which never reached a model.
+    Runs on the fast model, which `generate_stream` would otherwise not select.
     """
     prompt = (
         f"Below is part {part} of {total} of a document titled '{source}'.\n\n"
@@ -471,24 +386,11 @@ def _summarize_batch(chunks: list[tuple[str, dict]], source: str, part: int, tot
 
 
 @router.post("/explain")
-async def query_explain(req: ExplainRequest) -> StreamingResponse:
-    """
-    Explain one source in depth, using all of its chunks and no ranking at all.
+async def query_explain(req: ExplainRequest, request: Request) -> StreamingResponse:
+    """Explain one source in depth, using all of its chunks in document order and no ranking.
 
-    Retrieval is skipped outright rather than run with a permissive threshold: the
-    reranker scores chunks against a *question*, and there is no question here, so
-    every score it produced would be noise applied as an ordering. Chunks go in in
-    document order instead, which is the order the explanation should follow.
-
-    Sources up to EXPLAIN_MAX_CHUNKS go to the model whole. Larger ones are
-    summarized in batches first and the summaries explained - slower, and one
-    remove from the source text, but the alternative on a 155-chunk document is a
-    prompt nearly 3x the model's context window, which Ollama would silently
-    truncate rather than reject.
-
-    Same SSE format as /query/stream. [SOURCES] carries the source name with no
-    chunks: the UI's citation chips are per-chunk match scores, and nothing here
-    was matched.
+    Sources over EXPLAIN_MAX_CHUNKS are summarized in batches first; [SOURCES] carries the
+    source name with no chunks, because nothing here was matched.
     """
     t0 = time.perf_counter()
     await require_finished(req.source)
@@ -516,15 +418,39 @@ async def query_explain(req: ExplainRequest) -> StreamingResponse:
 
             summaries = []
             for i, batch in enumerate(batches):
-                # Heartbeat per batch: the map step is minutes of silence on a large
-                # source, and an SSE connection with nothing on it looks identical to
-                # a hung one from the browser's side.
-                yield "data: [HEARTBEAT]\n\n"
-                summaries.append(
-                    await asyncio.to_thread(
-                        _summarize_batch, batch, req.source, i + 1, len(batches)
+                # Nobody is waiting on this any more, and a batch costs minutes
+                if await request.is_disconnected():
+                    logger.info(f"Explain for '{req.source}' abandoned - client disconnected")
+                    return
+                # Re-checked per batch - the pre-stream check is minutes stale by now
+                if await asyncio.to_thread(find_active_job, req.source, USER_ID):
+                    logger.info(f"Explain for '{req.source}' abandoned - source went in flight")
+                    yield _sse_token(
+                        "\n\nThis source changed while it was being explained, so the "
+                        "explanation was stopped."
                     )
+                    yield _sse_timing(t0)
+                    yield "data: [DONE]\n\n"
+                    return
+
+                # Keep beating while the batch runs - a silent SSE looks like a hung one
+                task = asyncio.create_task(
+                    asyncio.to_thread(_summarize_batch, batch, req.source, i + 1, len(batches))
                 )
+                while True:
+                    done, _ = await asyncio.wait({task}, timeout=EXPLAIN_HEARTBEAT_SECONDS)
+                    if done:
+                        break
+                    yield "data: [HEARTBEAT]\n\n"
+                try:
+                    summaries.append(await task)
+                except Exception as e:
+                    # Raising here drops the connection with no [DONE], which reads as a hang
+                    logger.error(f"Explain map step failed on batch {i + 1}: {e}")
+                    yield _sse_token(f"\n\nCould not summarize part {i + 1} of this source: {e}")
+                    yield _sse_timing(t0)
+                    yield "data: [DONE]\n\n"
+                    return
             context = "\n\n".join(summaries)
         else:
             context = _explain_context(chunks)
@@ -536,8 +462,7 @@ async def query_explain(req: ExplainRequest) -> StreamingResponse:
             if token:
                 yield _sse_token(token)
 
-        # No chunks: see the docstring. `sources` still carries the name so the
-        # frontend can tell which document the message was about.
+        # No chunks, but `sources` carries the name so the UI can label the message
         sources_payload = json.dumps({"sources": [req.source], "scores": [], "chunks": []})
         yield f"data: [SOURCES]{sources_payload}\n\n"
         yield _sse_timing(t0)
@@ -558,9 +483,7 @@ async def query_explain(req: ExplainRequest) -> StreamingResponse:
 
 
 # -- Attachments -------------------------------------------------------------
-# A saved attachment: (temp file path, original filename, content-type, suffix).
-# Attachments are per-turn context only - never ingested into ChromaDB, so
-# they don't need chunking/embedding, just a text description per file.
+# A saved attachment: (temp path, original filename, content-type, suffix). Per-turn only
 _SavedAttachment = tuple[str, str, str, str]
 
 
@@ -586,13 +509,7 @@ def _read_text_attachment(path: str) -> str:
 
 
 def _process_one_attachment(saved_item: _SavedAttachment) -> dict:
-    """
-    Process a single saved attachment into a {type, name, description, block} dict.
-    `block` is the "[Attached ...]" string prepended to the question; `description`
-    is the bare text stored on the message so follow-up turns retain the context.
-    Split out from the old batch version so the caller can check for client
-    disconnects between attachments instead of blocking on the whole batch.
-    """
+    """Save one upload to a temp file and describe it for the answer prompt."""
     path, filename, content_type, suffix = saved_item
     try:
         if suffix in SUPPORTED_IMAGE_EXTENSIONS or content_type.startswith("image/"):
@@ -633,14 +550,9 @@ async def query_with_attachments(
     is_direct: str = Form("false"),
     attachments: list[UploadFile] | None = FastAPIFile(None),
 ) -> StreamingResponse:
-    """
-    Same SSE contract as /query/stream and /query/direct, but accepts multipart
-    file attachments (images, PDFs, text files) as extra per-turn context.
+    """Answer a question with per-turn file attachments, retrieval optional.
 
-    Attachments are processed up front (vision description / text extraction),
-    emitted as a `data: [ATTACHMENTS]{json}\\n\\n` event, then prepended to the
-    question before retrieval/generation. They are never stored as a retrievable
-    source - this is inline context for this conversation only, not ingestion.
+    Emits an extra [ATTACHMENTS] frame naming what was read.
     """
     t0 = time.perf_counter()
     history_list = json.loads(history) if history else []
@@ -648,9 +560,7 @@ async def query_with_attachments(
     direct = is_direct.strip().lower() == "true"
     logger.info(f"Attachment query ({'direct' if direct else 'RAG'}): {question}")
 
-    # UploadFile handles are only valid within this request; read + persist to
-    # temp files now, before the streaming generator (which runs after the
-    # response is returned) needs them.
+    # UploadFile handles die with the request, and the generator runs after it returns
     saved: list[_SavedAttachment] = []
     for f in attachments or []:
         data = await f.read()
@@ -667,8 +577,7 @@ async def query_with_attachments(
             if saved:
                 yield f"data: [STAGE]{json.dumps({'stage': 'processing_attachments'})}\n\n"
                 for item in saved:
-                    # Bail before each attachment (vision calls can run 30-50s+) so a
-                    # client that already clicked stop doesn't keep the pipeline busy.
+                    # Bail before each attachment - a vision call can run 30-50s
                     if await request.is_disconnected():
                         return
                     yield "data: [HEARTBEAT]\n\n"

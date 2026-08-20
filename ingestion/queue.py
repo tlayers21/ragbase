@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 from config.logging import setup_logging
@@ -27,8 +28,7 @@ _worker_thread = None
 
 _ACTIVE_STATUSES = {"queued", "ingesting", "building_graph"}
 
-# Statuses that mean the worker is done with a job. "error: <msg>" is terminal too but
-# carries the message, so it is matched by prefix rather than by membership.
+# "error: <msg>" is terminal too, matched by prefix because it carries the message
 _CLEARABLE_STATUSES = {"done", "cancelled"}
 
 
@@ -38,25 +38,10 @@ def _is_terminal(status: str) -> bool:
 
 
 # -- Status file helpers ---------------------------------------------------
-# Every status update is a read-modify-write of one shared JSON file, performed by
-# the ingestion worker and API request threads concurrently. Two problems follow,
-# and this lock is what prevents both:
-#   1. Lost updates - two threads load the same list, each edits one job, and the
-#      second write discards the first thread's edit.
-#   2. A crash - every writer used to build the same "queue_status.json.tmp" path,
-#      so whichever called os.replace() second hit FileNotFoundError and blew up
-#      its caller, leaving the status file empty and the UI showing no jobs at all.
-#      That was found when ingestion and graph builds ran on two separate workers;
-#      merging them into one job removed that particular race, but the API threads
-#      (cancel, clear_completed) still write here while the worker does.
-# The unique temp name below is belt-and-braces for anything holding a stale
-# reference to these helpers from outside the lock.
+# The worker and API threads read-modify-write one shared JSON file concurrently
 _status_lock = threading.RLock()
 
-# The job the worker is executing right now, or None between jobs. clear_completed()
-# reads it so a "cancelled" record can't be deleted out from under a job that is
-# still running - doing so left the worker with no record to check, and a job whose
-# record has vanished has nothing to stop it.
+# The job the worker is executing right now - a job whose record vanishes never stops
 _current_job_id: str | None = None
 
 
@@ -91,55 +76,49 @@ def _save_status(status: list) -> None:
         raise
 
 
-def _update_job(job_id: str, new_status: str) -> None:
+def _mutate_job(job_id: str, mutate: Callable[[dict], None]) -> None:
+    """Apply `mutate` to one job under the lock and persist, or do nothing if it is gone.
+
+    Skipping the write on a miss matters: a job whose row was already swept would
+    otherwise rewrite the whole file to change nothing.
+    """
     with _status_lock:
         status = _load_status()
         for job in status:
             if job["id"] == job_id:
-                job["status"] = new_status
-                # Progress counts what the *current* phase is working through, so a
-                # phase change invalidates them. Without this, "Page 4 of 4" from
-                # extraction stays on screen through the whole graph build and past
-                # "done", reading as a stalled job.
-                job.pop("progress", None)
-                # Stamp when the row became terminal so get_status() can expire it.
-                # Nothing else ever removes a finished row, so without this a cancelled
-                # or errored job stayed in the UI queue across every restart.
-                if _is_terminal(new_status):
-                    job["finished_at"] = time.time()
-                else:
-                    job.pop("finished_at", None)
-                break
-        _save_status(status)
+                mutate(job)
+                _save_status(status)
+                return
+
+
+def _update_job(job_id: str, new_status: str) -> None:
+    def apply(job: dict) -> None:
+        job["status"] = new_status
+        # Counts belong to one phase, so a phase change invalidates them
+        job.pop("progress", None)
+        # Stamped so get_status() can expire it - nothing else removes a finished row
+        if _is_terminal(new_status):
+            job["finished_at"] = time.time()
+        else:
+            job.pop("finished_at", None)
+
+    _mutate_job(job_id, apply)
 
 
 def update_job_estimate(job_id: str, estimated_seconds: int) -> None:
     """Update the time estimate for an active job."""
-    with _status_lock:
-        status = _load_status()
-        for job in status:
-            if job["id"] == job_id:
-                job["estimated_seconds"] = estimated_seconds
-                break
-        _save_status(status)
+    _mutate_job(job_id, lambda job: job.__setitem__("estimated_seconds", estimated_seconds))
 
 
 def update_job_progress(job_id: str, current: int, total: int, unit: str = "page") -> None:
-    """
-    Record "unit `current` of `total`" for an active job, for the UI's progress bar.
+    """Record "unit `current` of `total`" for an active job, for the UI's progress bar.
 
-    Optional by design: only phases with a countable loop set it (PDF pages on the
-    VLM and Docling paths, chunks during the graph build). Everything else leaves it
-    absent and the frontend falls back to its time-based estimate. Cleared by
-    _update_job on any status change.
+    Only phases with a countable loop set it; _update_job clears it on any status change.
     """
-    with _status_lock:
-        status = _load_status()
-        for job in status:
-            if job["id"] == job_id:
-                job["progress"] = {"current": current, "total": total, "unit": unit}
-                break
-        _save_status(status)
+    _mutate_job(
+        job_id,
+        lambda job: job.__setitem__("progress", {"current": current, "total": total, "unit": unit}),
+    )
 
 
 def _find_active_job(source: str, user_id: str) -> dict | None:
@@ -152,6 +131,22 @@ def _find_active_job(source: str, user_id: str) -> dict | None:
         ):
             return job
     return None
+
+
+def _duplicate_job_id(source: str, user_id: str) -> str | None:
+    """The id of an already-active job for this source, or None if it is free to enqueue.
+
+    Taken under the lock so the check cannot race the _add_job it is guarding.
+    """
+    with _status_lock:
+        existing = _find_active_job(source, user_id)
+        if not existing:
+            return None
+        logger.warning(
+            f"Skipping duplicate enqueue for source '{source}' and user '{user_id}' "
+            f"because job '{existing['id']}' is already active ({existing.get('status')})"
+        )
+        return existing["id"]
 
 
 def _add_job(job: dict) -> None:
@@ -207,11 +202,7 @@ def _worker():
         suffix = job["suffix"]
         tmp_path = job["tmp_path"]
 
-        # Cancellation has to be honoured *before* the first status write, or that
-        # write clobbers "cancelled" back to "ingesting" and the job runs anyway.
-        # A job can now sit queued for the length of the graph build ahead of it,
-        # so cancelling something that never started is the common case, not a
-        # narrow race.
+        # Before the first status write, or that write clobbers "cancelled" back to "ingesting"
         if is_cancelled(job_id):
             logger.info(f"Skipping cancelled job '{source}' before it started")
             if suffix != ".url" and not job.get("is_string"):
@@ -227,9 +218,7 @@ def _worker():
         logger.info(f"Ingesting job '{source}' ({suffix}) for user '{user_id}'")
 
         try:
-            # Ingestors are imported lazily here (not at module top) so their
-            # heavy per-format dependencies (docling, paddleocr, whisper,
-            # yt-dlp) only load when a job of that type is actually processed.
+            # Lazy so per-format deps load only when a job of that type is processed
             if suffix in SUPPORTED_PDF_EXTENSIONS:
                 from ingestion.pdf import PdfIngestor
 
@@ -279,24 +268,14 @@ def _worker():
             _update_job(job_id, f"error: {e}")
 
         finally:
-            # Held until the graph build finishes too, not just extraction. That
-            # costs nothing in peak disk (every queued job already has its temp
-            # copy on disk from enqueue time) and it is what makes crash recovery
-            # work: _requeue_recovered_jobs re-runs the whole job from tmp_path,
-            # which used to be deleted the moment extraction ended.
+            # Held until the graph build ends too, so crash recovery can re-run from tmp_path
             if suffix != ".url" and not job.get("is_string"):
                 try:
                     os.remove(tmp_path)
                 except OSError as e:
                     logger.warning(f"Could not remove temp file for '{source}': {e}")
 
-            # The job is completely over - extraction and graph build both - so
-            # hand the GPU back to queries. An ingest that touched the vision
-            # model leaves it resident holding 7.3GB, with the answer model
-            # evicted to make room, so without this the next question pays a
-            # cold load. Runs on this worker thread, where no user is waiting.
-            # See utils/ollama_client.py::restore_query_models for the measured
-            # eviction trace and why serializing the calls would not have helped.
+            # Hand the GPU back, on this thread, where no user is waiting on it
             try:
                 restore_query_models()
             except Exception as e:
@@ -330,21 +309,14 @@ def enqueue(
     user_id: str,
     describe_images: bool = False,
 ) -> str:
-    """
-    Add a file to the ingestion queue. Saves file to a temp location
-    and returns the job ID. The worker processes it in the background.
+    """Save a file to a temp location, add it to the queue, and return the job ID.
 
-    `describe_images` only affects PDFs - it turns on the opt-in Docling + VLM
-    figure-description pass (see PdfIngestor).
+    `describe_images` only affects PDFs, turning on the opt-in figure-description pass.
     """
     suffix = Path(filename).suffix.lower()
-    existing = _find_active_job(source, user_id)
-    if existing:
-        logger.warning(
-            f"Skipping duplicate enqueue for source '{source}' and user '{user_id}' "
-            f"because job '{existing['id']}' is already active ({existing.get('status')})"
-        )
-        return existing["id"]
+    duplicate = _duplicate_job_id(source, user_id)
+    if duplicate:
+        return duplicate
 
     job_id = str(uuid.uuid4())
 
@@ -362,7 +334,7 @@ def enqueue(
     elif suffix in SUPPORTED_TEXT_EXTENSIONS:
         estimated_seconds = 3
     elif suffix in SUPPORTED_OFFICE_EXTENSIONS:
-        # anydoc conversion is near-instant; the summary LLM call dominates.
+        # anydoc conversion is near-instant; the summary LLM call dominates
         estimated_seconds = 10
     else:
         estimated_seconds = 30
@@ -390,13 +362,9 @@ def enqueue_url(url: str, source: str, user_id: str) -> str:
     Add a YouTube or video URL to the ingestion queue.
     Returns the job ID.
     """
-    existing = _find_active_job(source, user_id)
-    if existing:
-        logger.warning(
-            f"Skipping duplicate enqueue for source '{source}' and user '{user_id}' "
-            f"because job '{existing['id']}' is already active ({existing.get('status')})"
-        )
-        return existing["id"]
+    duplicate = _duplicate_job_id(source, user_id)
+    if duplicate:
+        return duplicate
 
     job_id = str(uuid.uuid4())
 
@@ -422,13 +390,9 @@ def enqueue_text(text: str, source: str, user_id: str) -> str:
     Add a raw text string to the ingestion queue.
     Returns the job ID.
     """
-    existing = _find_active_job(source, user_id)
-    if existing:
-        logger.warning(
-            f"Skipping duplicate enqueue for source '{source}' and user '{user_id}' "
-            f"because job '{existing['id']}' is already active ({existing.get('status')})"
-        )
-        return existing["id"]
+    duplicate = _duplicate_job_id(source, user_id)
+    if duplicate:
+        return duplicate
 
     job_id = str(uuid.uuid4())
 
@@ -459,9 +423,7 @@ def cancel_job(job_id: str) -> bool:
             if job["id"] == job_id and job.get("status") in _ACTIVE_STATUSES:
                 job["status"] = "cancelled"
                 job["finished_at"] = time.time()
-                # Same reason _update_job drops it on any status change: the counts belong
-                # to the phase that was interrupted, and leaving "chunk 9 of 19" beside
-                # "Cancelled" reads as a job that is still working.
+                # Counts belong to the interrupted phase and would read as still working
                 job.pop("progress", None)
                 found = True
                 break
@@ -471,33 +433,32 @@ def cancel_job(job_id: str) -> bool:
 
 
 def find_active_job(source: str, user_id: str) -> dict | None:
-    """
-    Return the active job for a source, or None.
+    """Return the job holding this source, or None, on the same terms as active_sources.
 
-    Public counterpart to `_find_active_job` for callers outside this module -
-    `api/documents.py` uses it to stop an in-flight ingestion or graph build
-    before deleting the source out from under it.
+    A cancelled job the worker still owns counts, so guards and retrieval cannot
+    disagree about whether a source being torn down is still in flight.
     """
     with _status_lock:
-        return _find_active_job(source, user_id)
+        job = _find_active_job(source, user_id)
+        if job:
+            return job
+        running = _current_job_id
+        for candidate in _load_status():
+            if (
+                candidate.get("source") == source
+                and candidate.get("user_id") == user_id
+                and candidate.get("status") == "cancelled"
+                and candidate.get("id") == running
+            ):
+                return candidate
+        return None
 
 
 def active_sources(user_id: str) -> set[str]:
-    """
-    Source names that still have a job in flight for this user.
-
-    The queue status file is the authority on "is this source finished". A job
-    stores its chunks in ChromaDB minutes before the graph build that completes
-    it, so retrieval has to exclude these explicitly - otherwise a document the
-    UI is still showing as in-progress can answer a question with a partial
-    graph behind it. Read once per query in `search_candidates()`.
+    """Source names that still have a job in flight for this user.
 
     A job the worker still owns counts as in flight even once it reads "cancelled",
-    because cancellation is cooperative: DELETE /documents/{source} flips the status
-    *before* it deletes the data, so for the length of that teardown the chunks are
-    still in ChromaDB. Treating the source as finished during that window is what let
-    GET /documents/ hand back a phantom entry - a real chunk_count with no preview and
-    no stored file - and let retrieval answer from a corpus being deleted underneath it.
+    because its chunks are still in ChromaDB for the length of the teardown.
     """
     with _status_lock:
         running = _current_job_id
@@ -514,13 +475,10 @@ def active_sources(user_id: str) -> set[str]:
 
 
 def is_cancelled(job_id: str) -> bool:
-    """Check whether a job has been marked cancelled. Used by ingestors to abort
-    long-running extraction loops early once cancellation is requested.
+    """Check whether a job has been marked cancelled, so ingestors can abort early.
 
-    A missing record counts as cancelled. It used to return False, which meant
-    clear_completed() deleting a cancelled-but-still-running job's record turned
-    every later poll into "keep going": the build ran to completion, the cleanup
-    never fired, and the source became queryable with a half-written graph.
+    A missing record counts as cancelled; returning False let a build run to completion
+    after its record was cleared.
     """
     for job in _load_status():
         if job["id"] == job_id:
@@ -530,24 +488,15 @@ def is_cancelled(job_id: str) -> bool:
 
 
 def get_status() -> list:
-    """
-    Return current queue status for all jobs, expiring long-finished rows first.
+    """Return current queue status for all jobs, expiring long-finished rows first.
 
-    The sweep lives on the read path because that is the only code guaranteed to run:
-    the worker is idle once a job ends, and clear_completed() has no caller. A row that
-    reached "cancelled" or "error" otherwise persisted forever - across restarts too,
-    since _requeue_recovered_jobs() only rewrites active rows - which is how a cancelled
-    ingestion ended up pinned in the UI queue with no way to dismiss it.
-
-    Rows written before finished_at existed have no timestamp and are treated as long
-    expired, so any already-stuck row clears on the first poll after this ships.
+    The sweep lives on the read path because it is the only code guaranteed to run once
+    a job ends; rows with no finished_at are treated as long expired.
     """
     cutoff = time.time() - QUEUE_TERMINAL_ROW_TTL_SECONDS
     with _status_lock:
         status = _load_status()
-        # The job the worker owns right now is kept regardless of status, for the same
-        # reason clear_completed() keeps it: a cooperatively cancelled job polls its own
-        # record to learn it should stop, and a job whose record vanished never stops.
+        # The running job is kept regardless - it polls its own record to learn to stop
         running = _current_job_id
         kept = [
             job
@@ -563,14 +512,10 @@ def get_status() -> list:
 
 
 def clear_completed() -> None:
-    """Remove done, cancelled, and errored jobs from the status file.
+    """Remove done, cancelled, and errored jobs from the display queue only.
 
-    This only affects the display queue - it never touches ChromaDB or the graph.
-
-    The job the worker currently owns is kept even when its status is clearable.
-    Cancellation is cooperative, so a job sits at "cancelled" while it is still
-    running; deleting that record left the worker unable to see it had been
-    cancelled, and the source went on to finish and become queryable.
+    The job the worker currently owns is kept even when its status is clearable, because
+    a cooperatively cancelled job still polls its own record.
     """
     with _status_lock:
         running = _current_job_id

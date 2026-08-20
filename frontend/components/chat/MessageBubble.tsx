@@ -47,8 +47,7 @@ const STAGE_LABELS: Record<string, string> = {
   generating: "Generating answer…",
   processing_attachments: "Processing attachments…",
   loading_source: "Reading the document…",
-  // Only sent for a source too large to explain in one pass, so it doubles as the
-  // signal that this is going to take a while.
+  // Only sent for an oversized source, so it doubles as "this will take a while"
   summarizing_source: "Summarizing the document section by section…",
   stopped: "Stopped.",
 };
@@ -60,10 +59,7 @@ interface SourceGroup {
   chunks: CitedChunk[];
 }
 
-// Retrieval returns up to MAX_FINAL_RESULTS chunks and several of them routinely
-// come from the same document, so a chip per chunk would repeat the same name
-// three times. Group by source, order sources by their best-scoring chunk, and
-// order each source's chunks the same way.
+// Grouped by source, because a chip per chunk repeats the same document name
 function groupChunksBySource(chunks: CitedChunk[]): SourceGroup[] {
   const bySource = new Map<string, CitedChunk[]>();
   for (const chunk of chunks) {
@@ -132,8 +128,7 @@ function ChunksModal({ group, onClose }: { group: SourceGroup; onClose: () => vo
   );
 }
 
-// Same subtle pill styling as the "Sources used" button. Hover shows the full
-// VLM description / extracted text via native title tooltip - no extra modal needed.
+// Hover shows the full description through the native title tooltip
 function AttachmentChip({ attachment }: { attachment: MessageAttachment }) {
   return (
     <div
@@ -202,7 +197,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const [isHovered, setIsHovered] = useState(false);
   const [openSource, setOpenSource] = useState<string | null>(null);
-  // Must run before the early returns below - hooks can't be conditional.
+  // Must run before the early returns below - hooks can't be conditional
   const sourceGroups = useMemo(() => groupChunksBySource(message.chunks ?? []), [message.chunks]);
   const openGroup = sourceGroups.find((g) => g.source === openSource) ?? null;
 
@@ -294,9 +289,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
               {message.stage === "stopped" ? (
                 <span className="text-[10px] text-foreground-muted/50">stopped</span>
               ) : (
-                // End-to-end: API receipt through to this answer being painted.
-                // Undefined until the post-paint measurement lands a frame after
-                // [DONE], and on a stopped stream it never lands at all.
+                // Undefined until the post-paint measurement lands, and never on a stop
                 message.latencyMs !== undefined && (
                   <span className="text-[10px] text-foreground-muted/50">
                     {message.latencyMs < 1000

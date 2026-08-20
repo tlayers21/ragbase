@@ -41,16 +41,10 @@ def get_summary_collection(user_id: str) -> chromadb.Collection:
 
 
 def get_source_chunks(source: str, user_id: str) -> list[tuple[str, dict]]:
-    """Every chunk of one source as (text, metadata), in original document order.
+    """Every chunk of one source as (text, metadata), in `chunk_index` order.
 
-    Chroma returns matches in no meaningful order, so the `chunk_index` metadata
-    written at ingest is the only thing that reconstructs the document. Anything
-    that reads a whole source - rendering it, fact-checking it, explaining it -
-    wants that order, and each caller re-deriving it is how one of them ended up
-    iterating a document scrambled.
-
-    Returns [] for an unknown source; callers decide whether that is a 404, a
-    warning, or nothing at all.
+    Chroma returns matches unordered, so this is the only thing that reconstructs the
+    document; returns [] for an unknown source.
     """
     collection = get_collection(user_id)
     results = collection.get(where={"source": source}, include=["documents", "metadatas"])

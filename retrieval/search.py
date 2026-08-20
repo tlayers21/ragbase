@@ -15,13 +15,9 @@ def search(
     n_results: int = MAX_FINAL_RESULTS,
     source_filter: list[str] | None = None,
 ) -> tuple[list[str], list[dict]]:
-    """
-    Hybrid search combining BM25 keyword search and vector search
-    via Reciprocal Rank Fusion (RRF).
+    """Hybrid BM25 and vector search combined by Reciprocal Rank Fusion.
 
-    Sources with an in-flight ingestion job are excluded - see `_exclude_clause`.
-
-    Returns (docs, metadatas) - the top n_results chunks.
+    Returns the top n_results chunks as (docs, metadatas), excluding in-flight sources.
     """
     collection = get_collection(user_id)
     query_embedding = embed(query)
@@ -48,8 +44,7 @@ def search(
     if not docs:
         return [], []
 
-    # BM25 runs over the vector candidates only (not the full corpus) - cheap
-    # keyword re-scoring of an already-relevant pool
+    # BM25 re-scores the vector candidates only, not the full corpus
     tokenized = [doc.lower().split() for doc in docs]
     bm25 = BM25Okapi(tokenized)
     bm25_scores = bm25.get_scores(query.lower().split())
@@ -71,18 +66,10 @@ def search_summaries(
     query: str,
     user_id: str,
 ) -> list[str]:
-    """
-    Stage 1 hierarchical retrieval - search document-level summaries
-    to identify which sources are relevant before chunk-level search.
+    """Stage 1: search document summaries to pick which sources are worth chunk-searching.
 
-    n_results scales dynamically with collection size: min(max(3, total//3), 8).
-    Results with cosine distance > 0.7 are filtered out as irrelevant;
-    if all results exceed the threshold, returns the unfiltered list as a fallback.
-    Sources with an in-flight ingestion job are excluded - a summary is written
-    before the graph build, so without this Stage 1 would nominate a document
-    that isn't finished, and the unfiltered fallback would do it unconditionally.
-
-    Returns a list of relevant source names.
+    n_results scales with collection size, and results past SUMMARY_DISTANCE_THRESHOLD are
+    dropped unless that would empty the list.
     """
     collection = get_summary_collection(user_id)
     query_embedding = embed(query)
@@ -122,18 +109,10 @@ def search_summaries(
 
 # -- Filter and fusion helpers -----------------------------------------------
 def _exclude_clause(excluded: set[str] | None) -> dict | None:
-    """
-    A `$nin` clause hiding sources whose ingestion job hasn't finished, or None.
+    """A `$nin` clause hiding sources whose ingestion job has not finished, or None.
 
-    A job stores its chunks and summary in ChromaDB and then spends minutes
-    building its knowledge graph, so between those points the source is
-    physically searchable while the app considers it unfinished. The frontend
-    already keeps it out of the source picker; this is what makes that a real
-    guarantee rather than a UI convention - without it an unfiltered question
-    still retrieves from a half-built document.
-
-    Returns None when nothing is in flight, which is the overwhelmingly common
-    case: an empty `$nin` is not a filter worth sending to Chroma.
+    Chunks are searchable minutes before the graph build ends, so this is what makes the
+    picker's convention a real guarantee.
     """
     return {"source": {"$nin": sorted(excluded)}} if excluded else None
 

@@ -1,10 +1,3 @@
-"""SQLite-backed semantic query cache at data/cache.db.
-
-Stores retrieval context (not answers) keyed by query embedding - a cache hit
-returns previously retrieved chunks for a semantically similar query, and the
-caller regenerates a fresh answer. Entries expire after CACHE_TTL (24h).
-"""
-
 import json
 import sqlite3
 import time
@@ -46,10 +39,9 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def get_cached_response(user_id: str, embedding: list[float] | np.ndarray) -> dict | None:
-    """
-    Check the cache for a semantically similar query for this user.
-    Expired rows (older than CACHE_TTL) are purged first. Returns the
-    JSON-parsed cached retrieval context, or None on a miss.
+    """Return the cached retrieval context for a semantically similar query, or None.
+
+    Rows older than CACHE_TTL are purged first.
     """
     try:
         query_vec = _to_array(embedding)

@@ -5,9 +5,7 @@ import { useTheme } from "next-themes";
 import { Sun, Moon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-// Light and Dark only. The OS preference is consulted once, on first load, by
-// ThemeInitializer in components/providers.tsx - after that the theme is always
-// an explicit user choice, so there is nothing for a "System" button to select.
+// Light and Dark only - the OS preference is read once and then becomes explicit
 const options = [
   { value: "light", icon: Sun, label: "Light" },
   { value: "dark", icon: Moon, label: "Dark" },
@@ -15,8 +13,7 @@ const options = [
 
 export function ThemeToggle({ className }: { className?: string }) {
   const { theme, setTheme } = useTheme();
-  // The active theme comes from localStorage, which SSR can't see - skip the
-  // active highlight until after mount so server and client markup match.
+  // localStorage is invisible to SSR, so highlight only after mount
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 

@@ -5,8 +5,8 @@ from urllib.parse import parse_qs, urlparse
 
 from fastapi import APIRouter, Form, HTTPException, UploadFile
 
+from api.title import build_title
 from config.logging import setup_logging
-from config.models import get_model
 from config.paths import SOURCES_DIR
 from config.runtime import USER_ID
 from ingestion.queue import (
@@ -17,8 +17,6 @@ from ingestion.queue import (
     enqueue_url,
     get_status,
 )
-from utils.ollama_client import generate_stream
-from utils.text import normalize_title
 
 logger = setup_logging(__name__)
 router = APIRouter(prefix="/ingest", tags=["ingest"])
@@ -41,17 +39,13 @@ async def ingest_file(
     source: str = Form(...),
     describe_images: bool = Form(False),
 ):
-    """
-    Upload a file for ingestion. Returns a job ID immediately.
+    """Upload a file for ingestion and return a job ID immediately.
 
-    `describe_images` is the per-file "Describe diagrams" opt-in and applies to PDFs
-    only; every other format ignores it.
+    `describe_images` is the per-file "Describe diagrams" opt-in and applies to PDFs only.
     """
     file_bytes = await file.read()
     suffix = Path(file.filename or "").suffix.lower() or ".bin"
-    # Uploads run to hundreds of MB (a 381MB PDF is in the test corpus), so both
-    # the copy kept in data/sources and the queue's own temp copy are written off
-    # the event loop rather than stalling every other request behind the disk.
+    # Uploads reach hundreds of MB, so both copies are written off the event loop
     await asyncio.to_thread(_save_source_file, source, suffix, file_bytes)
     job_id = await asyncio.to_thread(
         enqueue,
@@ -68,7 +62,10 @@ async def ingest_file(
 async def ingest_url(
     url: str = Form(...),
 ):
-    """Ingest a YouTube URL. Fetches video title via yt-dlp. Returns a job ID immediately."""
+    """Ingest a YouTube URL, taking the video title from yt-dlp.
+
+    Returns a job ID immediately.
+    """
 
     # Strip timestamp params that can cause yt-dlp to fail (&t=504s or ?t=504s)
     url = re.sub(r"&t=\d+s?", "", url)
@@ -116,32 +113,18 @@ async def ingest_text(
 
 @router.post("/generate_title")
 async def generate_title(text: str = Form(...)):
-    """Generate a short 2-5 word title for ingested text using the fast LLM."""
-    prompt = (
-        "Generate a short 2-5 word title for this text. "
-        "Reply in English with only the title, as plain words separated by single "
-        "spaces. No punctuation, no quotes.\n\n"
-        f"{text[:500]}"
-    )
+    """Generate a short title for ingested text, for use as its source name.
 
-    def _call() -> str:
-        return "".join(generate_stream(prompt, model=get_model("title"))).strip()
-
-    try:
-        title = await asyncio.to_thread(_call)
-    except Exception as e:
-        logger.warning(f"Title generation failed: {e}")
-        title = ""
-
-    return {"title": normalize_title(title)}
+    Deliberately unclipped - the caller slugifies the result, which caps it at 100.
+    """
+    title = await build_title("Generate a short 2-5 word title for this text.", text, max_chars=500)
+    return {"title": title}
 
 
 @router.get("/status")
 async def queue_status():
     """Get current status of all ingestion jobs."""
-    # The frontend polls this every 1-3s while anything is active, and it reads a
-    # JSON file guarded by _status_lock - which both queue workers also hold. On
-    # the event loop, one contended read stalls every in-flight request.
+    # Takes _status_lock, briefly, on the same file the worker writes
     return {"jobs": await asyncio.to_thread(get_status)}
 
 
@@ -154,12 +137,10 @@ async def clear_done():
 
 @router.post("/cancel/{job_id}")
 async def cancel_ingestion(job_id: str):
-    """
-    Cancel an active job (queued, ingesting, or building_graph).
+    """Cancel an active job and remove everything it had already written.
 
-    Cancellation is cooperative - this only flips the status, and the worker acts
-    on it at its next check. Everything the job had already written is then
-    removed, so a cancelled source leaves nothing queryable behind.
+    Cancellation is cooperative: this flips the status and the worker acts on it at its
+    next check.
     """
     cancelled = await asyncio.to_thread(cancel_job, job_id)
     if not cancelled:

@@ -31,32 +31,23 @@ const PDFThumbnailView = dynamic(() => import("@/components/sources/PDFThumbnail
 
 // -- Helpers -------------------------------------------------------------------
 
-// "binary" covers everything the ingest surface accepts but nothing here can
-// render - the office formats, e-books and video. It is a real preview outcome,
-// not a failure: see sourceTypeFromExt in lib/utils.ts.
+// "binary" is a real preview outcome, not a failure - office formats and video
 type SourceType = "pdf" | "image" | "text" | "binary";
 
 /**
  * Where to load a source's stored file from.
  *
- * Prefers the same-origin Next.js static mount so previews and PDF rendering
- * never touch the FastAPI server - it has queries to answer, and these are whole
- * multi-hundred-MB files. Falls back to `/sources/{source}/file` when the user id
- * can't be read, and returns null when there is no stored original at all.
+ * Prefers the same-origin static mount so whole-file reads never touch FastAPI;
+ * null means no stored original exists.
  */
 function useSourceFileUrl(source: SourceSummary): string | null {
   const [url, setUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    // Cleared up front, not just on the no-file branch. Without this the hook
-    // kept returning the *previous* source's URL until the async resolve landed,
-    // so opening a second preview briefly rendered the first file.
+    // Cleared up front, or a second preview briefly renders the first file
     setUrl(null);
 
-    // `GET /documents/` derives file_ext from a listing of data/sources, so an
-    // empty one means no original was ever stored - the FastAPI fallback would
-    // 404 by construction. YouTube is the ordinary case here: its transcript
-    // comes straight out of Whisper and is never written to disk.
+    // An empty file_ext means no original was ever stored, as with YouTube
     if (!source.file_ext) return;
 
     let cancelled = false;
@@ -95,12 +86,7 @@ function SourceThumbnail({ source }: { source: SourceSummary }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const fileUrl = useSourceFileUrl(source);
 
-  // Where a previewable original doesn't exist, fall back to the opening of the
-  // source's first chunk, which GET /documents/ carries for exactly this. A
-  // YouTube transcript never has a file on disk and an office document's bytes are
-  // a ZIP header, so both used to render an empty box with a generic icon while
-  // their ingested text sat in ChromaDB. Only when there is no preview either does
-  // it settle on the icon.
+  // With no previewable original, fall back to chunk 0's opening, then the icon
   const noFileState = useCallback(
     (): ThumbnailState =>
       source.preview ? { status: "text", content: source.preview } : { status: "none" },
@@ -110,17 +96,14 @@ function SourceThumbnail({ source }: { source: SourceSummary }) {
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    // No stored original - the chunk preview is already in hand, so there is
-    // nothing to fetch and no reason to wait for the card to scroll into view.
+    // No stored original, and the chunk preview is already in hand
     if (!source.file_ext) {
       setState(noFileState());
       return;
     }
     if (!fileUrl) return;
 
-    // Aborted on unmount. The card grid unmounts the instant a preview opens, and
-    // a request left in flight then fails as net::ERR_FAILED - which Chrome
-    // surfaces as a misleading CORS error and which raced the preview's own request.
+    // Aborted on unmount - an in-flight request surfaces as a misleading CORS error
     const controller = new AbortController();
 
     const observer = new IntersectionObserver(
@@ -131,10 +114,7 @@ function SourceThumbnail({ source }: { source: SourceSummary }) {
 
         resolveSourceType(source, controller.signal)
           .then(async (type) => {
-            // "binary" settles on the generic icon. It must not fall through to
-            // the text branch: that fetches the whole file to slice 300
-            // characters off it, which for a .mp4 source meant downloading the
-            // entire video to render a thumbnail of its header bytes.
+            // Must not fall through to the text branch, which downloads the whole file
             if (type === "binary") {
               setState(noFileState());
               return;
@@ -173,10 +153,8 @@ function SourceThumbnail({ source }: { source: SourceSummary }) {
         </div>
       )}
       {state.status === "image" && fileUrl && (
-        // crossOrigin makes this a CORS request like any fetch() of the same URL,
-        // so both share one cache entry - see the Vary: Origin note in
-        // api/sources.py. Harmless on the same-origin static URL, and still
-        // required on the FastAPI fallback.
+        // crossOrigin so this and fetch() share one cache entry on the FastAPI fallback
+
         // eslint-disable-next-line @next/next/no-img-element
         <img src={fileUrl} alt="" crossOrigin="anonymous" className="w-full h-full object-cover" />
       )}
@@ -198,13 +176,10 @@ function SourceThumbnail({ source }: { source: SourceSummary }) {
 // -- Preview pane --------------------------------------------------------------
 
 /**
- * The two cases with no renderable original: a source that was never written to
- * disk (YouTube) and one whose bytes aren't viewable (office formats, video).
+ * The two cases with no renderable original: nothing stored, or unviewable bytes.
  *
- * Both still have ingested text, so they show the opening of the first chunk
- * rather than an empty panel. The reason there's no original stays as a caption -
- * "no file was stored" and "the file has no text in it" are different facts, and
- * collapsing them would make a failed extraction look like a healthy source.
+ * The caption keeps them distinct, because collapsing them makes a failed
+ * extraction look like a healthy source.
  */
 function NoFilePreview({ source, message }: { source: SourceSummary; message: string }) {
   const indexed = `Indexed as ${source.chunk_count} chunk${source.chunk_count !== 1 ? "s" : ""}.`;
@@ -249,10 +224,7 @@ function PreviewPane({ source, onClose }: PreviewPaneProps) {
   const hasStoredFile = Boolean(source.file_ext);
 
   useEffect(() => {
-    // Nothing was stored for this source, so there is no file to type-sniff or
-    // render. Land on the neutral empty state below rather than the destructive
-    // "Preview unavailable" - a YouTube transcript is a healthy source, not a
-    // broken one, and the red error read like the ingest had failed.
+    // Neutral empty state, not "Preview unavailable" - a YouTube source is healthy
     if (!hasStoredFile) {
       setIsLoading(false);
       setError(null);
@@ -266,8 +238,7 @@ function PreviewPane({ source, onClose }: PreviewPaneProps) {
     setType(null);
     setTextContent(null);
 
-    // Aborted on unmount/source change so a superseded request can't fail late and
-    // paint "Preview unavailable" over a preview that actually loaded fine.
+    // Aborted so a superseded request cannot paint an error over a loaded preview
     const controller = new AbortController();
 
     resolveSourceType(source, controller.signal)
@@ -471,15 +442,8 @@ const JOB_STATUS_LABELS: Record<string, string> = {
 /**
  * Jobs still occupying the ingestion worker, with a cancel control.
  *
- * `GET /documents/` no longer returns mid-build sources, which is what makes the
- * grid below trustworthy - but the reason it used to was real: you need to be
- * able to see a stuck job and get rid of it. That capability lives here instead,
- * driven by the ingestion queue, which is where a job's status and progress
- * actually are. `SourcesPanel` shows the same jobs in the right-hand panel; this
- * exists so the capability survives that panel being collapsed.
- *
- * Cancelling deletes the source's data (the backend's `_cleanup_partial`), which
- * is what the confirm copy has to say - don't soften it to "progress is lost".
+ * Cancelling deletes the source's data, which is what the confirm copy has to
+ * say - don't soften it to "progress is lost".
  */
 function InProgressSection({
   jobs,
@@ -603,7 +567,7 @@ export function SourcesModal({
     [jobs]
   );
 
-  // Reset the view every time the modal opens.
+  // Reset the view every time the modal opens
   useEffect(() => {
     if (!isOpen) return;
     setIsLoadingSources(true);
@@ -615,19 +579,13 @@ export function SourcesModal({
       .finally(() => setIsLoadingSources(false));
   }, [isOpen]);
 
-  // Re-fetch when the number of in-flight jobs changes, which matters now that
-  // `GET /documents/` is done-only: a job finishing is what *adds* its source to
-  // the grid, so without this it would sit in "In progress", disappear, and not
-  // reappear until the modal was reopened. Deliberately separate from the effect
-  // above - folding it in would reset `preview` and `confirming` too, closing an
-  // open preview the moment an unrelated background job finished.
+  // Separate from the effect above, which would close an open preview on every refetch
   useEffect(() => {
     if (!isOpen) return;
     fetchSources()
       .then(setSources)
       .catch(() => {
-        // Keep the list we already have; a failed refresh is not worth emptying
-        // the grid the user is looking at.
+        // Keep the list we have - a failed refresh must not empty the grid
       });
   }, [isOpen, activeJobs.length]);
 
@@ -651,16 +609,11 @@ export function SourcesModal({
   const handleConfirmDelete = useCallback(
     async (source: string) => {
       try {
-        // No separate cancel call first: DELETE /documents/{source} finds the
-        // source's active job, cancels it, and only then deletes - one round trip,
-        // and no window where the job writes rows between our two requests.
+        // One round trip - DELETE cancels the active job itself before deleting
         await apiDeleteSource(source);
         setSources((prev) => prev.filter((s) => s.source !== source));
         setConfirming(null);
-        // That endpoint cancels the job for us but returns no job id, so the queue row
-        // has to be hidden by source name. Without this, deleting a source mid-build
-        // left its now-"cancelled" row in the Ingest panel - the X button's cancel path
-        // hides the row itself, and this path used to skip that entirely.
+        // Hidden by source name, because DELETE returns no job id to hide the row by
         onJobsInvalidated?.(source);
         onSourcesChanged?.();
       } catch {

@@ -63,16 +63,10 @@ async def update_display_name(req: DisplayNameUpdate):
 
 @router.post("/reranker_threshold")
 async def update_reranker_threshold(req: RerankerThreshold):
-    """
-    Set the relevance floor for retrieved chunks. Persisted to data/settings.json.
+    """Set the relevance floor for retrieved chunks and clear the semantic cache.
 
-    Applies to the next query with no restart - `rerank_candidates()` reads the
-    getter per call rather than an import-time constant.
-
-    The semantic cache is cleared as part of this. A cache hit returns stored
-    chunks and skips reranking entirely (24h TTL), so without this the new
-    threshold would silently do nothing to any recently-asked question - which
-    reads as the setting being broken.
+    The cache must be cleared because a hit skips reranking entirely, which would leave
+    the new floor silently doing nothing for CACHE_TTL.
     """
     score = max(RELEVANCE_SCALE_MIN, min(RELEVANCE_SCALE_MAX, req.min_score))
     set_reranker_min_score(score)

@@ -2,9 +2,7 @@
 
 import { Document, Page } from "react-pdf";
 import { Loader2 } from "lucide-react";
-// Imported for its side effect: sets pdf.js's worker to the local copy. See
-// lib/pdf.ts - this used to be a jsDelivr URL assigned here at module scope,
-// which broke offline and fought PDFThumbnail over the same global.
+// Imported for its side effect - points pdf.js's shared worker at the local copy
 import "@/lib/pdf";
 
 const PAGE_WIDTH = 520;

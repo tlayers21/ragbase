@@ -11,11 +11,7 @@ import {
 import { deriveSourceName } from "@/lib/utils";
 import type { IngestionJob } from "@/types";
 
-// One status set, because there is now one lifecycle: a job holds the single
-// worker from the moment it starts until its knowledge graph is built. There used
-// to be a second, narrower set for "the machine is actually busy" - extraction and
-// the graph ran on separate queues, so `ingested`/`waiting_for_graph` were hand-off
-// states with nothing running. Both are gone, and so is the distinction.
+// One status set, because a job now holds the worker from start to built graph
 const ACTIVE_STATUSES = new Set(["queued", "ingesting", "building_graph"]);
 
 /** Whether a job is still occupying the ingestion worker (or waiting for it). */
@@ -26,9 +22,8 @@ export function isActiveStatus(status: string): boolean {
 /**
  * Whether the worker has finished with a job, successfully or not.
  *
- * Mirrors `_is_terminal` in `ingestion/queue.py`; `error: <msg>` carries its message,
- * so it is matched by prefix. Not simply `!isActiveStatus` - an unrecognised status
- * from a newer backend should read as in-progress rather than silently finished.
+ * Mirrors `_is_terminal` in `ingestion/queue.py`, and is deliberately not
+ * `!isActiveStatus` - an unrecognised status should read as in-progress.
  */
 export function isTerminalStatus(status: string): boolean {
   return status === "done" || status === "cancelled" || status.startsWith("error");
@@ -38,8 +33,7 @@ function hasActiveJobs(jobs: IngestionJob[]): boolean {
   return jobs.some((j) => isActiveStatus(j.status));
 }
 
-// Dynamic poll interval: fast while queued so transitions feel immediate. The
-// graph phase is the slow one and has nothing to report between chunks.
+// Fast while queued so transitions feel immediate; the graph phase is slow and quiet
 function pollInterval(jobs: IngestionJob[]): number {
   if (jobs.some((j) => j.status === "queued")) return 1000;
   if (jobs.some((j) => j.status === "ingesting")) return 2000;
@@ -65,7 +59,7 @@ export function useIngestion(onComplete?: () => void) {
     }
   }, []);
 
-  // Recursive setTimeout so the interval can adapt each cycle.
+  // Recursive setTimeout so the interval can adapt each cycle
   const scheduleNext = useCallback(
     (currentJobs: IngestionJob[]) => {
       if (!activeRef.current) return;
@@ -99,15 +93,7 @@ export function useIngestion(onComplete?: () => void) {
 
   useEffect(() => () => stopPolling(), [stopPolling]);
 
-  // Adopt whatever the server already has, once, on mount.
-  //
-  // Polling used to start only from uploadFile/ingestText/ingestUrl, so the panel
-  // knew about jobs *this tab* had started and nothing else. Reload the page while
-  // a large PDF was ingesting and the Ingest panel came back empty - no progress
-  // bar, no cancel button - while the worker kept running; a job that had failed
-  // was equally invisible, and with no rows there was no "clear finished" button
-  // to dismiss its error either. `startPolling` is a no-op if a loop is already
-  // running, and every dependency here is a stable useCallback, so this runs once.
+  // Adopt the server's jobs once on mount, so a reload does not empty the panel
   useEffect(() => {
     let cancelled = false;
     fetchIngestionStatus()
@@ -117,17 +103,14 @@ export function useIngestion(onComplete?: () => void) {
         if (hasActiveJobs(status.jobs)) startPolling(status.jobs);
       })
       .catch(() => {
-        // Best-effort: a failed first poll just leaves the panel empty, as before.
+        // Best-effort: a failed first poll just leaves the panel empty, as before
       });
     return () => {
       cancelled = true;
     };
   }, [startPolling]);
 
-  // Auto-fade finished jobs: 30s -> opacity-0 (1s transition) -> remove from display.
-  // Every terminal status fades, not just "done". Cancelled and errored rows used to be
-  // excluded, so they sat in the panel indefinitely with no way to dismiss them - the X
-  // button is only rendered for cancellable (i.e. still active) jobs.
+  // Every terminal status fades, not just "done" - there is no X button to dismiss one
   useEffect(() => {
     for (const job of jobs) {
       if (!isTerminalStatus(job.status)) continue;
@@ -185,8 +168,7 @@ export function useIngestion(onComplete?: () => void) {
   );
 
   const cancelJob = useCallback(async (jobId: string) => {
-    // hiddenJobIds (not a local jobs filter) is what keeps it hidden - the next
-    // status poll would otherwise bring the now-"cancelled" job right back.
+    // hiddenJobIds, not a local filter - the next poll would bring the row back
     setHiddenJobIds((prev) => new Set([...prev, jobId]));
     try {
       await cancelIngestion(jobId);
@@ -245,10 +227,7 @@ export function useIngestion(onComplete?: () => void) {
     [startPolling]
   );
 
-  // Deleting a source goes through the documents API, which cancels the job for us but
-  // never tells the caller its id - so the delete path had no way to hide the row the
-  // way cancelJob does, and a source deleted mid-build left its "cancelled" row on
-  // screen. Match by source name instead, which is what the caller does have.
+  // Matched by source name, because the delete endpoint returns no job id
   const hideJobsForSource = useCallback(
     (source: string) => {
       const ids = jobs.filter((j) => j.source === source).map((j) => j.id);

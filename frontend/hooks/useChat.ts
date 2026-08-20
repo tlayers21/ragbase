@@ -12,28 +12,32 @@ import {
   compactMessages,
   type AttachmentPayload,
 } from "@/lib/api";
-import { HEALTH_POLL_INTERVAL_MS, HISTORY_TOKEN_BUDGET } from "@/lib/config";
+import { COMPACT_THRESHOLD, HEALTH_POLL_INTERVAL_MS, HISTORY_TOKEN_BUDGET } from "@/lib/config";
 import type { ChatSession, CitedChunk, Message, MessageAttachment, PendingAttachment, QueryMode } from "@/types";
 
-const COMPACT_THRESHOLD = 0.9;
-
-// Tokens the *conversation history* occupies - nothing else. Retrieved context is
-// not counted here because it is not accumulated: the backend sends only the
-// current turn's chunks and formats prior turns from their message text alone.
-// HISTORY_TOKEN_BUDGET already holds a reserve back for that one turn.
-//
-// This used to add 1500 tokens per exchange as a stand-in for RAG context, which
-// grew with the conversation for context that was never resent. Harmless against
-// the old 40,960 ceiling; against the real window it would have compacted a
-// ten-exchange chat on 15k of allowance alone.
+// Conversation history only - retrieved context is not accumulated across turns
 function estimateTokens(messages: Message[]): number {
   const textChars = messages.reduce((sum, m) => sum + m.role.length + m.content.length, 0);
   return Math.floor(textChars / 4);
 }
 
-// Folds a past message's attachment descriptions into its history content so
-// follow-up questions retain attachment context - descriptions only exist on
-// the frontend's Message objects, never re-sent as files on later turns.
+// Below this a summary did not summarize, and replacing history on it is data loss
+const MIN_SUMMARY_CHARS = 200;
+// Capped, because a summary is meant to be far smaller than its input: 100k chars
+const MIN_SUMMARY_RATIO = 0.005;
+const MAX_REQUIRED_SUMMARY_CHARS = 1000;
+
+function isUsableSummary(summary: string, replaced: Message[]): boolean {
+  const text = summary.trim();
+  const replacedChars = replaced.reduce((sum, m) => sum + m.content.length, 0);
+  const required = Math.max(
+    MIN_SUMMARY_CHARS,
+    Math.min(replacedChars * MIN_SUMMARY_RATIO, MAX_REQUIRED_SUMMARY_CHARS)
+  );
+  return text.length >= required;
+}
+
+// Folds attachment descriptions into history text - the files are never re-sent
 function historyContent(m: Message): string {
   if (!m.attachments || m.attachments.length === 0) return m.content;
   const blocks = m.attachments
@@ -47,8 +51,7 @@ function toAttachmentPayloads(attachments: PendingAttachment[]): AttachmentPaylo
 }
 
 const STORAGE_KEY = "ragbase_sessions";
-// The reset_all.sh timestamp this browser has already acted on. Kept separate from
-// STORAGE_KEY so clearing the history doesn't also forget that it was cleared.
+// Kept out of STORAGE_KEY so clearing history doesn't forget that it was cleared
 const RESET_TOKEN_KEY = "ragbase_last_reset_at";
 
 function loadSessions(): ChatSession[] {
@@ -75,16 +78,7 @@ export function useChat() {
   const isLoadingRef = useRef(false);
   const generationRef = useRef(0);
 
-  // Load history immediately, then reconcile against reset_all.sh's marker.
-  //
-  // The load can't wait on the backend: reset_all.sh kills both servers, and
-  // start.sh waits only on :3000 before opening the browser, so the first paint
-  // routinely happens while uvicorn is still importing torch. This used to be a
-  // single fetch whose failure was indistinguishable from "never reset", which is
-  // why a reset appeared to leave chat history untouched - and then wiped it on
-  // some unrelated launch days later, whenever the backend happened to win the
-  // race. So: show what's stored, keep asking until the backend actually answers,
-  // and clear both storage and state if the answer is newer than what we've acted on.
+  // Show stored history at once, then reconcile against reset_all.sh's marker
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -100,21 +94,17 @@ export function useChat() {
       try {
         resetAt = await fetchResetToken();
       } catch {
-        // Backend not up yet. Retry on the same cadence useReadiness polls at,
-        // rather than deferring the clear to some future page load.
+        // Retry on useReadiness' cadence rather than deferring to a future page load
         if (!cancelled) timer = setTimeout(checkReset, HEALTH_POLL_INTERVAL_MS);
         return;
       }
       if (cancelled) return;
-      // Clear only when the backend reports a reset *newer* than the one this
-      // browser last handled. Comparing tokens rather than consuming a one-shot
-      // flag is what makes a reset reach a second tab or a second browser at all.
+      // Comparing tokens, not consuming a flag, is what reaches a second tab
       const seen = Number(localStorage.getItem(RESET_TOKEN_KEY) ?? 0);
       if (resetAt !== null && resetAt > seen) {
         localStorage.removeItem(STORAGE_KEY);
         localStorage.setItem(RESET_TOKEN_KEY, String(resetAt));
-        // State was populated above, so storage alone isn't enough - and any
-        // later saveSessions() would write the stale list straight back.
+        // Storage alone isn't enough - a later saveSessions() would rewrite the stale list
         setSessions([]);
         setActiveSessionId(null);
       }
@@ -183,16 +173,11 @@ export function useChat() {
       sourceFilter: string[] | null = null,
       isDirect: boolean = false,
       attachments: PendingAttachment[] = [],
-      // Set by explainSource() below. When present the request goes to
-      // /query/explain and carries only this name - `content` is still the text
-      // shown in the user's bubble, but the server never sees it, because there
-      // is no question to answer.
+      // Set by explainSource() - the request then carries only this name
       explainSourceName?: string
     ) => {
       if (isLoadingRef.current) {
-        // A previous stream is still open - abort it and give the fetch a
-        // moment to actually tear down before opening a new one, or the
-        // in-flight reader can throw "Error in input stream".
+        // Let the aborted fetch tear down, or the reader throws "Error in input stream"
         abortRef.current?.abort();
         await new Promise((resolve) => setTimeout(resolve, 100));
         isLoadingRef.current = false;
@@ -227,31 +212,39 @@ export function useChat() {
         const kept = sessionForCompact.messages.slice(-10);
         try {
           const summaryText = await compactMessages(
-            toCompact.map((m) => ({ role: m.role, content: m.content }))
+            toCompact.map((m) => ({ role: m.role, content: historyContent(m) }))
           );
-          const summaryMsg: Message = {
-            id: uuid(),
-            role: "system",
-            content: summaryText,
-            type: "summary",
-            timestamp: Date.now(),
-            isComplete: true,
-          };
-          const compacted = [summaryMsg, ...kept];
-          currentSessions = currentSessions.map((s) =>
-            s.id === sessionId ? { ...s, messages: compacted } : s
-          );
-          setSessions(currentSessions);
-          saveSessions(currentSessions);
-          setToast("Conversation compacted to save context space");
-          setTimeout(() => setToast(null), 4000);
-        } catch {
-          // Non-blocking - continue without compaction if it fails
+          if (!isUsableSummary(summaryText, toCompact)) {
+            // saveSessions writes localStorage, so the originals exist nowhere else
+            console.warn(
+              `Compaction returned an unusable summary (${summaryText.trim().length} chars) - keeping history`
+            );
+            setToast("Could not compact the conversation - history kept");
+            setTimeout(() => setToast(null), 4000);
+          } else {
+            const summaryMsg: Message = {
+              id: uuid(),
+              role: "system",
+              content: summaryText,
+              type: "summary",
+              timestamp: Date.now(),
+              isComplete: true,
+            };
+            const compacted = [summaryMsg, ...kept];
+            currentSessions = currentSessions.map((s) =>
+              s.id === sessionId ? { ...s, messages: compacted } : s
+            );
+            setSessions(currentSessions);
+            saveSessions(currentSessions);
+            setToast("Conversation compacted to save context space");
+            setTimeout(() => setToast(null), 4000);
+          }
+        } catch (err) {
+          console.warn("Compaction failed - keeping history", err);
         }
       }
 
-      // Optimistic attachment metadata so chips render immediately; `description`
-      // is filled in once the backend's [ATTACHMENTS] event arrives mid-stream.
+      // Optimistic so chips render now - `description` arrives with [ATTACHMENTS]
       const optimisticAttachments: MessageAttachment[] | undefined =
         attachments.length > 0
           ? attachments.map((a) => ({
@@ -302,14 +295,17 @@ export function useChat() {
       // Fire-and-forget: replace truncated title with an LLM-generated one
       if (isFirstMessage) {
         const sid = sessionId;
-        generateChatTitle(content).then((title) => {
-          if (!title) return;
-          setSessions((prev) => {
-            const next = prev.map((s) => (s.id === sid ? { ...s, title } : s));
-            saveSessions(next);
-            return next;
-          });
-        });
+        generateChatTitle(content)
+          .then((title) => {
+            if (!title) return;
+            setSessions((prev) => {
+              const next = prev.map((s) => (s.id === sid ? { ...s, title } : s));
+              saveSessions(next);
+              return next;
+            });
+          })
+          // The truncated first message stays as the title - log why the real one is missing
+          .catch((err) => console.warn("Chat title generation failed", err));
       }
 
       setIsLoading(true);
@@ -325,9 +321,7 @@ export function useChat() {
       let assistantScores: number[] = [];
       let assistantChunks: CitedChunk[] = [];
       let sawFirstToken = false;
-      // Half of the end-to-end latency: the server's own elapsed time, delivered in
-      // the [TIMING] frame. The other half is measured from [DONE] to final paint,
-      // below. Two deltas, two clocks, never subtracted from each other.
+      // Two deltas on two clocks, added, never subtracted from each other
       let serverMs: number | null = null;
 
       const handlers = {
@@ -370,8 +364,7 @@ export function useChat() {
           assistantChunks = chunks;
         },
         onAttachments: (results: { type: string; name: string; description: string }[]) => {
-          // Patches descriptions onto the USER message (not the assistant reply) -
-          // relies on the backend processing attachments in the same order sent.
+          // Onto the user message, and relies on the backend keeping the sent order
           setSessions((prev) =>
             prev.map((s) => {
               if (s.id !== sessionId) return s;
@@ -423,14 +416,7 @@ export function useChat() {
             return next;
           });
 
-          // The commit triggered above is where the real cost lives: React renders
-          // the whole transcript, re-parses the full answer through
-          // markdown + KaTeX, and writes every session to localStorage - all of it
-          // *after* [DONE] was parsed. Reading the clock here would miss all of it,
-          // which is the undercount this replaces.
-          //
-          // Two nested rAFs, not one: the first fires before the browser paints the
-          // pending commit, the second only after that paint has happened.
+          // Two nested rAFs - the first fires before the paint, the second after it
           if (serverMs === null) return;
           const settledServerMs = serverMs;
           requestAnimationFrame(() => {
@@ -478,8 +464,7 @@ export function useChat() {
         // Abort is intentional - keep whatever content was streamed
         if ((err as { name?: string }).name === "AbortError") {
           handlers.onDone();
-          // "Stopped." stays on the message permanently so the user always
-          // knows this response was cut short mid-generation.
+          // Stays on the message permanently - this response was cut short
           setSessions((prev) => {
             const next = prev.map((s) => {
               if (s.id !== sessionId) return s;
@@ -522,15 +507,8 @@ export function useChat() {
   /**
    * Ask for a whole-source explanation, as though the user had typed it.
    *
-   * Goes through sendMessage rather than duplicating it: session creation,
-   * compaction, the user/assistant message pair, title generation, abort
-   * handling and the latency measurement are all identical here, and only the
-   * endpoint differs.
-   *
-   * The first argument is only ever displayed - /query/explain takes `{source}`
-   * and nothing else. The `[source]` filter is likewise not sent; it records
-   * that this turn is scoped to one document, which is what the message's own
-   * mode badge reads.
+   * Goes through sendMessage because only the endpoint differs; the displayed
+   * text and the `[source]` filter are never sent.
    */
   const explainSource = useCallback(
     (source: string) => sendMessage(`Explain "${source}" in depth`, [source], false, [], source),

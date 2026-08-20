@@ -102,11 +102,8 @@ class ImageIngestor(BaseIngestor):
     def _run_vision(self, image_path: Path, source_name: str) -> str:
         try:
             return describe_image(image_path, source_name)
-        except TimeoutError:
-            logger.warning(f"Qwen2.5-VL timed out for '{source_name}', using OCR only")
-            return ""
         except Exception as e:
-            logger.warning(f"Qwen2.5-VL failed for '{source_name}': {e}")
+            logger.warning(f"Qwen2.5-VL failed for '{source_name}', using OCR only: {e}")
             return ""
 
     def _combine(self, ocr_text: str, description: str, source_name: str) -> str:

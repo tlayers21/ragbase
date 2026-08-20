@@ -23,15 +23,9 @@ class SourceSummary(BaseModel):
     chunk_count: int
     flagged_count: int
     contradiction_count: int
-    # Extension of the stored original (".pdf", ".png", ...), or "" if the file is
-    # gone. The frontend needs it to build the static /static/sources/... URL,
-    # since the source name is a slug with no extension of its own.
+    # Extension of the stored original, or "" - the source name is a slug without one
     file_ext: str = ""
-    # Opening characters of the source's first chunk. The sources modal previews the
-    # stored original, which only works for .txt/.md/.csv, images and PDFs - a
-    # YouTube transcript has no original at all and an office document's bytes are a
-    # ZIP header. Those cases rendered an empty box with a generic icon even though
-    # the ingested text was sitting in ChromaDB, so it is carried here.
+    # Opening of chunk 0, shown where there is no previewable original on disk
     preview: str = ""
 
 
@@ -60,35 +54,16 @@ def _stored_extensions() -> dict[str, str]:
 
 @router.get("/", response_model=list[SourceSummary])
 async def list_documents():
-    """List every *finished* source with summary info.
+    """List every finished source with summary info.
 
-    Sources with a job in flight are excluded. This used to be the raw inventory
-    of ChromaDB, deliberately, so the sources modal could show a stuck job and
-    let you delete it - but that made every consumer responsible for re-deriving
-    "is this actually usable", and each one reported a `chunk_count` that was
-    whatever had been written so far, presented as final. Retrieval already
-    excludes these sources (`retrieval/search.py::_exclude_clause`), so listing
-    them meant offering a document that provably could not answer anything.
-
-    The capability that justified the raw inventory is not lost: in-flight jobs
-    come from the ingestion queue, which is where their status and progress
-    actually live, and the sources modal renders them from there with a cancel
-    control (mirroring SourcesPanel).
+    Sources with a job in flight are excluded, because their chunk_count is whatever
+    has been written so far rather than a final figure.
     """
     collection = get_collection(USER_ID)
     results = await asyncio.to_thread(lambda: collection.get(include=["metadatas"]))
     extensions = await asyncio.to_thread(_stored_extensions)
     in_flight = await asyncio.to_thread(active_sources, USER_ID)
-    # Only chunk 0 of each source, so this stays one small query rather than pulling
-    # every chunk's text just to read the first one.
-    #
-    # Read last on purpose. These reads are four separate points in time, not a
-    # snapshot, so a concurrent delete_source() can land between them - and a source
-    # that appeared in the metadatas read but has since lost its chunks came back as a
-    # phantom: a real chunk_count with an empty preview and an empty file_ext, which the
-    # UI rendered as an extra un-previewable card. Chunk 0 exists for every stored
-    # source, so making the *last* read the authority on existence means a source torn
-    # down mid-call drops out entirely instead of appearing half-built.
+    # Read last - chunk 0 is the authority on existence, so a torn-down source drops out
     first_chunks = await asyncio.to_thread(
         lambda: collection.get(where={"chunk_index": 0}, include=["documents", "metadatas"])
     )
@@ -101,8 +76,7 @@ async def list_documents():
             if text:
                 previews[meta["source"]] = text[:SOURCE_PREVIEW_CHARS]
 
-    # results["metadatas"] can be None when the collection is empty in some
-    # ChromaDB versions. Guard against that and skip any malformed entries.
+    # metadatas can be None on an empty collection in some ChromaDB versions
     metadatas = results.get("metadatas") or []
 
     sources: dict[str, list[dict]] = {}
@@ -162,14 +136,7 @@ async def get_document(source: str):
 @router.delete("/{source}")
 async def delete_document(source: str):
     """Delete a source and all its chunks, summary, and graph data."""
-    # Stop any in-flight job for this source *before* deleting it. A graph build
-    # writes nodes one chunk at a time and holds the SQLite write lock while it
-    # does, so deleting underneath a live build both fought that lock and let the
-    # build keep inserting rows for a source that no longer exists. The build
-    # polls its cancelled status between chunks and abandons the rest.
-    #
-    # Deliberately here rather than in helpers.delete_source(): the re-ingestion
-    # path calls that from inside the very job this would cancel.
+    # Cancel first, or the build keeps inserting rows for a source that is gone
     job = await asyncio.to_thread(find_active_job, source, USER_ID)
     if job:
         await asyncio.to_thread(cancel_job, job["id"])
@@ -179,8 +146,7 @@ async def delete_document(source: str):
 
     deleted = await asyncio.to_thread(lambda: delete_source(source, USER_ID))
 
-    # A source still being ingested has no chunks yet, so `deleted == 0` doesn't
-    # mean "not found" when we just cancelled its job - the delete did real work.
+    # deleted == 0 is not "not found" when a job was just cancelled
     if deleted == 0 and job is None:
         raise HTTPException(status_code=404, detail=f"Source '{source}' not found")
 
@@ -190,13 +156,10 @@ async def delete_document(source: str):
 @router.post("/{source}/check_facts")
 async def check_facts(source: str):
     """Run the factual accuracy checker on a source, once it has finished ingesting."""
-    # Gated: checking a source mid-extraction would grade a fraction of the
-    # document and write `flagged` metadata onto chunks the job may still delete
-    # (a failed or cancelled build discards everything).
+    # Gated - grading mid-extraction writes flags onto chunks the job may still delete
     await require_finished(source)
 
-    # One LLM call per chunk - minutes on a large source, and it would block the
-    # event loop for all of it (no query could even start streaming).
+    # One LLM call per chunk - minutes on a large source, all of it off the event loop
     results = await asyncio.to_thread(check_source_facts, source, USER_ID)
     flagged = sum(1 for r in results if r["flagged"])
     return {"status": "ok", "flagged": flagged, "total": len(results)}
@@ -205,12 +168,9 @@ async def check_facts(source: str):
 @router.post("/{source}/check_contradictions")
 async def check_contradictions(source: str):
     """Run contradiction detection on a source against other finished sources."""
-    # Gated for the same reason as check_facts, and with an extra edge: this one
-    # compares *across* sources and writes metadata onto both sides of a
-    # contradiction, so an unfinished source on either side leaves flags pointing
-    # at a document that may not survive its own job.
+    # Gated like check_facts, and this one writes onto both sides of a contradiction
     await require_finished(source)
 
-    # Same reasoning as check_facts: LLM calls plus ChromaDB reads, all synchronous.
+    # Same reasoning as check_facts: LLM calls plus ChromaDB reads, all synchronous
     count = await asyncio.to_thread(find_contradictions, source, USER_ID)
     return {"status": "ok", "contradictions_found": count}

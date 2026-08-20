@@ -14,10 +14,9 @@ export interface SourceSummary {
   file_ext: string;
 }
 
-/** The full status lifecycle of an ingestion job, in order. One job runs
- * extraction *and* its knowledge graph build, so `done` means both are finished.
- * A failure is the literal string `error: <detail>` instead, which is why
- * `IngestionJob.status` stays a plain string - consumers prefix-match on it. */
+/** The status lifecycle of an ingestion job, in order, where `done` means
+ *  extraction and the graph build both finished. A failure is the literal
+ *  string `error: <detail>`, which consumers prefix-match. */
 export type IngestionJobStatus =
   | "queued"
   | "ingesting"
@@ -36,11 +35,9 @@ export interface IngestionJob {
   /** Seconds the current phase is expected to take. Rewritten when the graph
    * phase starts, so it always describes the phase the job is in now. */
   estimated_seconds?: number;
-  /** Real countable progress through the current phase, when the phase has a
-   * countable loop: PDF pages on the VLM and Docling paths, chunks during the
-   * graph build. Absent everywhere else - notably the anydoc typed-PDF path,
-   * which is one opaque subprocess - so consumers must fall back to
-   * `estimated_seconds`. Cleared by the backend on every status change. */
+  /** Countable progress through the current phase, where the phase has a
+   *  countable loop. Absent everywhere else, so consumers fall back to
+   *  `estimated_seconds`. */
   progress?: { current: number; total: number; unit?: string };
 }
 
@@ -97,14 +94,8 @@ export interface Message {
   mode?: QueryMode;
   /** Retrieval stage while streaming ("retrieving_sources" | "reranking" | "generating"). */
   stage?: string;
-  /** End-to-end latency in ms: from the moment the API received the question to
-   * the moment this answer's final token was painted. Built from the server's own
-   * elapsed time (the [TIMING] frame) plus the browser's time from that frame to
-   * the post-commit paint, so no clock is ever compared across the two.
-   *
-   * It used to measure first-token -> [DONE] entirely in the browser, which
-   * excluded retrieval, reranking and every millisecond before the first token -
-   * i.e. most of what makes a query slow. */
+  /** End-to-end latency in ms, from API receipt to this answer's final paint.
+   *  Two deltas on two clocks, added, so no clock is compared across the two. */
   latencyMs?: number;
   /** True once onDone fires - guards sources section from rendering during streaming. */
   isComplete?: boolean;

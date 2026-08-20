@@ -165,7 +165,7 @@ export function ChatInput({ onSend, onStop, isStreaming, isLoading }: ChatInputP
         e.preventDefault();
         addTextAttachment("Pasted text", text);
       }
-      // Otherwise: let the browser paste normally into the textarea.
+      // Otherwise: let the browser paste normally into the textarea
     },
     [addImageAttachment, addTextAttachment]
   );

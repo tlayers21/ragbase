@@ -12,8 +12,7 @@ interface DropZoneProps {
 
 export function DropZone({ onDrop, isUploading }: DropZoneProps) {
   const [isDragging, setIsDragging] = useState(false);
-  // Off by default: describing figures needs a Docling layout pass on top of the
-  // anydoc extraction, which turns a seconds-long ingest into a minutes-long one.
+  // Off by default - figure description adds a Docling pass on top of anydoc
   const [describeImages, setDescribeImages] = useState(false);
   const dragCounterRef = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);

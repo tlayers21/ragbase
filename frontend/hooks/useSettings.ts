@@ -15,8 +15,7 @@ export function useSettings() {
   const [userId, setUserId] = useState<string | null>(null);
   const [displayName, setDisplayNameState] = useState("");
   const [telemetryEnabled, setTelemetryEnabledState] = useState(true);
-  // Held as the displayed percentage, converted to a logit only when saving -
-  // the slider, the note beside it and the match badges then all speak one unit.
+  // Held as the displayed percentage and converted to a logit only when saving
   const [rerankerPercent, setRerankerPercentState] = useState(DEFAULT_RELEVANCE_PERCENT);
 
   useEffect(() => {
@@ -26,14 +25,13 @@ export function useSettings() {
       .then((user) => {
         setUserId(user.user_id);
         setDisplayNameState(user.display_name ?? "");
-        // Read from the backend rather than mirrored to localStorage: it is the
-        // side that actually applies the threshold, so anything else can drift.
+        // From the backend, which is the side that actually applies the threshold
         if (typeof user.reranker_min_score === "number") {
           setRerankerPercentState(relevancePercent(user.reranker_min_score));
         }
       })
       .catch(() => {
-        // Backend unreachable - leave defaults, greeting simply won't show.
+        // Backend unreachable - leave defaults, greeting simply won't show
       });
   }, []);
 
@@ -47,29 +45,28 @@ export function useSettings() {
     try {
       await saveDisplayName(value);
     } catch {
-      // Non-blocking - keep the local value, backend will pick it up next save.
+      // Non-blocking - keep the local value, backend will pick it up next save
     }
   }, []);
 
   const setTelemetryEnabled = useCallback(async (enabled: boolean) => {
     setTelemetryEnabledState(enabled);
-    // Mirror to localStorage so the toggle renders correctly before the fetch resolves.
+    // Mirror to localStorage so the toggle renders correctly before the fetch resolves
     localStorage.setItem("ragbase_telemetry", enabled ? "on" : "off");
     try {
       await apiSetTelemetryEnabled(enabled);
     } catch {
-      // Non-blocking - backend applies it on the next successful call.
+      // Non-blocking - backend applies it on the next successful call
     }
   }, []);
 
-  // Callers commit on release, not on every drag frame: each save writes
-  // data/settings.json and clears the semantic cache server-side.
+  // Commit on release - each save writes to disk and clears the cache server-side
   const setRerankerPercent = useCallback(async (percent: number) => {
     setRerankerPercentState(percent);
     try {
       await setRerankerThreshold(scoreFromRelevancePercent(percent));
     } catch {
-      // Non-blocking - the local value stands, backend picks it up on the next save.
+      // Non-blocking - the local value stands, backend picks it up on the next save
     }
   }, []);
 

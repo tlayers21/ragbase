@@ -36,9 +36,9 @@ Be conservative - only flag clear factual errors, not opinions or uncertain clai
 
 
 def check_source_facts(source: str, user_id: str) -> list[dict]:
-    """
-    Fact-check all chunks for a source. Stores results back into ChromaDB.
-    Returns list of results with verdict and reason per chunk.
+    """Fact-check all chunks for a source, storing results back into ChromaDB.
+
+    Returns a list of results with a verdict and reason per chunk.
     """
     chunks = get_source_chunks(source, user_id)
 

@@ -10,14 +10,9 @@ logger = setup_logging(__name__)
 
 
 class OfficeIngestor(BaseIngestor):
-    """
-    Ingestor for office and e-book formats (Word, PowerPoint, Excel, OpenDocument,
-    RTF, EPUB, CSV) via anydoc, which converts them to GitHub-Flavored Markdown.
+    """Ingestor for office and e-book formats via anydoc, which emits GFM.
 
-    anydoc is pure Rust with no ML models and no external services, so conversion
-    is effectively instant and stays consistent with the project's local-only
-    premise. There is no OCR or VLM stage here: these formats carry their text
-    natively, and anything image-only inside them is out of scope.
+    No OCR or VLM stage: these formats carry their text natively.
     """
 
     def extract_text(self, source_path: str | Path, source_name: str) -> str:
@@ -31,9 +26,7 @@ class OfficeIngestor(BaseIngestor):
 
         result = anydoc_convert.to_markdown(source_path, source_name)
         if not result.ok:
-            # No fallback exists for these formats - Docling doesn't cover them and
-            # there is no VLM path, so surface the reason and let ingest() mark the
-            # job as errored rather than storing an empty document.
+            # No fallback for these formats, so error the job rather than store nothing
             raise ValueError(f"anydoc could not convert '{source_name}': {result.detail}")
 
         return result.markdown

@@ -62,8 +62,7 @@ class YoutubeIngestor(BaseIngestor):
         Download audio only from a video URL using yt-dlp.
         Returns the path to the downloaded audio file.
         """
-        # yt-dlp is a heavy optional dependency - import lazily so it's only
-        # loaded when a YouTube/video URL is actually being ingested.
+        # Heavy optional dependency - imported only when a URL is actually ingested
         import yt_dlp
 
         output_template = os.path.join(output_dir, "audio.%(ext)s")

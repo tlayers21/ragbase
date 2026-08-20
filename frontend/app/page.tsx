@@ -32,18 +32,13 @@ export default function HomePage() {
     hideJobsForSource,
   } = useIngestion(refreshSources);
 
-  // Sources with a job still in flight - extraction or graph build, they're the
-  // same lifecycle now.
+  // Sources with a job still in flight - extraction and graph build are one lifecycle
   const activeJobSources = useMemo(
     () => new Set(jobs.filter((j) => isActiveStatus(j.status)).map((j) => j.source)),
     [jobs]
   );
 
-  // A source isn't offered anywhere until its job is completely finished. Its
-  // chunks land in ChromaDB before the graph build starts, so filtering here is
-  // what keeps a half-finished document out of the picker - and it also hides a
-  // source correctly while it's being *re*-ingested, since its old data is gone
-  // by then. It reappears, and rejoins the selection, on "done".
+  // Chunks land before the graph build, so this is what keeps a half-built source out
   const readySources = useMemo(
     () => sources.filter((s) => !activeJobSources.has(s.source)),
     [sources, activeJobSources]
@@ -54,10 +49,7 @@ export default function HomePage() {
   const [isSourcesModalOpen, setIsSourcesModalOpen] = useState(false);
   const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set());
 
-  // All sources are selected by default. New sources auto-join the selection;
-  // deleted sources are dropped from it. Existing user deselections persist.
-  // The ref mutation must happen outside the setSelectedSources updater to
-  // avoid issues with React Strict Mode's double-invocation of updaters.
+  // The ref mutation stays outside the updater, which Strict Mode double-invokes
   const knownSourceNamesRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     const currentNames = new Set(readySources.map((s) => s.source));
@@ -95,9 +87,7 @@ export default function HomePage() {
     setSelectedSources(new Set());
   }, []);
 
-  // Refresh the source list when a job reaches any terminal state: "done" adds
-  // the source to the picker, and "cancelled"/"error" now *remove* data, since a
-  // cancelled job deletes whatever it had already written.
+  // Any terminal state changes the list - "done" adds, cancelled and error remove
   const prevJobStatusesRef = useRef<Map<string, string>>(new Map());
   useEffect(() => {
     let needsRefresh = false;
@@ -133,16 +123,7 @@ export default function HomePage() {
     [uploadFile]
   );
 
-  // Cover the app until the backend's models are loaded - see WarmupGate.
-  // Deliberately shown from first paint rather than waiting for the first /health
-  // response: that wait left the app visible and clickable for the round trip,
-  // which is the exact window the gate exists to close. The gate fades itself out
-  // instead, so a cold load reads as a smooth transition rather than a flash.
-  //
-  // Returning here from /settings used to replay that whole sequence: this page
-  // unmounts on the route change, taking useReadiness' state with it. The hook
-  // latches "ready" at module scope now, so a route return is instant - see
-  // hooks/useReadiness.ts.
+  // Shown from first paint, not after the first /health - that wait is the gap it closes
   const showWarmupGate = !readiness.ready;
 
   return (

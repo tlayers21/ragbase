@@ -1,4 +1,3 @@
-import concurrent.futures
 from pathlib import Path
 
 import torch
@@ -6,7 +5,6 @@ import whisper
 
 from config.logging import setup_logging
 from config.paths import DATA_DIR, SOURCES_DIR
-from config.settings import VISION_TIMEOUT_SECONDS
 from retrieval.graph import delete_source as delete_graph_source
 from utils.cache import clear_cache
 from utils.chromadb_client import get_collection, get_summary_collection
@@ -67,22 +65,6 @@ def _seconds_to_timestamp(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-def vision_with_timeout(image_path: str, prompt: str, task: str, timeout: int) -> str:
-    """
-    Run a vision model call with a thread-based timeout.
-
-    This is thread-safe because it works from any calling thread, and it is
-    cross-platform because it does not depend on POSIX-only signal support.
-    Raises TimeoutError if the call exceeds the timeout.
-    """
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(vision, image_path, prompt, task=task)
-        try:
-            return future.result(timeout=timeout)
-        except concurrent.futures.TimeoutError as exc:
-            raise TimeoutError(f"Vision model timed out after {timeout}s") from exc
-
-
 def describe_image(image_path: str | Path, source_name: str) -> str:
     """
     Describe an image using Qwen2.5-VL with the source name as context.
@@ -92,20 +74,14 @@ def describe_image(image_path: str | Path, source_name: str) -> str:
         f"Describe what you see in detail, using the title as context."
     )
 
-    return vision_with_timeout(
-        image_path, prompt, task="vision_handwrite", timeout=VISION_TIMEOUT_SECONDS
-    )
+    return vision(image_path, prompt, task="vision_handwrite")
 
 
 def delete_source(source: str, user_id: str, remove_file: bool = True) -> int:
-    """
-    Delete all chunks, summary, and graph data for a source.
-    Returns the number of chunks deleted.
+    """Delete all chunks, summary, and graph data for a source, returning chunks deleted.
 
-    `remove_file` also discards the stored original in `data/sources/`. Pass False
-    from the re-ingestion cleanup path in `BaseIngestor.ingest`: the API writes the
-    new upload to that exact path *before* enqueueing the job, so wiping the old
-    source's file there would delete the file the running ingestion just stored.
+    Pass remove_file=False from the re-ingest path, where the new upload already occupies
+    the stored original's path.
     """
     collection = get_collection(user_id)
     summary_collection = get_summary_collection(user_id)
@@ -131,19 +107,21 @@ def delete_source(source: str, user_id: str, remove_file: bool = True) -> int:
     return deleted_count
 
 
+def progress_checkpoint_path(source: str) -> Path:
+    """Where the scanned-PDF page-resume checkpoint for a source lives.
+
+    Derived in one place so the writer and the deleter cannot drift apart.
+    """
+    return DATA_DIR / f"{source}_progress.json"
+
+
 def _delete_progress_checkpoint(source: str) -> None:
-    """
-    Discard the scanned-PDF page-resume checkpoint for a source, if one is on disk.
+    """Discard the scanned-PDF page-resume checkpoint for a source, if one is on disk.
 
-    `PdfIngestor` writes `data/{source}_progress.json` after every page so a long VLM
-    transcription can resume, and unlinks it only on success. A cancelled or failed run
-    therefore left it behind, and re-ingesting the same file resumed from the old page
-    offset - skipping pages that were never transcribed into the new run. Deleting the
-    source has to clear it too, since that is the point where its text stops existing.
-
-    Best-effort: most sources never create one.
+    Best-effort: leaving one behind makes a re-ingest resume at a page the new run never
+    transcribed.
     """
-    checkpoint = DATA_DIR / f"{source}_progress.json"
+    checkpoint = progress_checkpoint_path(source)
     try:
         checkpoint.unlink(missing_ok=True)
     except OSError as e:
@@ -151,18 +129,9 @@ def _delete_progress_checkpoint(source: str) -> None:
 
 
 def _delete_source_file(source: str, user_id: str) -> None:
-    """
-    Remove the stored original for a source, if one was kept.
+    """Remove the stored original for a source, matching `{source}.*` since the name is a slug.
 
-    Deleting only the chunks left the uploaded file behind forever: the source
-    vanished from every list in the UI while its PDF/image stayed on disk, so
-    `data/sources/` grew without bound and nothing in the app could reach the file
-    to clean it up. Matches `{source}.*` because the source name is a slug that
-    carries no extension of its own.
-
-    Best-effort by design - a source with no stored original (YouTube, whose
-    transcript is never written to disk) is the normal case, and a failure here
-    must not turn a successful delete into an error.
+    Best-effort: a source with no stored original, such as YouTube, is the normal case.
     """
     source_dir = SOURCES_DIR / user_id
     if not source_dir.exists():

@@ -1,7 +1,6 @@
 import type { AttachmentType } from "@/types";
 
-// Paste threshold: clipboard text under this length pastes normally into the
-// textarea; over this length becomes a text attachment card instead.
+// Clipboard text over this length becomes an attachment card, not a paste
 export const PASTE_TEXT_THRESHOLD = 5000;
 
 export const ACCEPTED_ATTACHMENT_TYPES =
@@ -17,9 +16,7 @@ export function classifyFile(file: File): AttachmentType | null {
 
 const PREVIEW_MAX_CHARS = 140;
 
-// First two non-blank lines, additionally capped by character count - pasted
-// text is often a single unbroken paragraph with no newlines at all, so the
-// line-count cap alone isn't enough to keep the attachment card small.
+// Capped by characters too - pasted text is often one unbroken paragraph
 export function twoLinePreview(text: string): string {
   const lines = text
     .split(/\r?\n/)
@@ -29,14 +26,10 @@ export function twoLinePreview(text: string): string {
   return lines.length > PREVIEW_MAX_CHARS ? `${lines.slice(0, PREVIEW_MAX_CHARS)}…` : lines;
 }
 
-// Best-effort page count for a PDF attachment card - dynamically imported so
-// pdf.js (large) never inflates the main chat bundle for users who never attach
-// a PDF. Returns undefined on any failure ("if available" per spec).
+// Best-effort page count, dynamically imported to keep pdf.js out of the chat bundle
 export async function getPdfPageCount(file: File): Promise<number | undefined> {
   try {
-    // Dynamic so the cost stays off the initial bundle; lib/pdf sets workerSrc
-    // to the local worker as a side effect of being imported, which is also
-    // what stops this from reaching for a CDN on a machine with no network.
+    // Importing lib/pdf also points workerSrc at the local worker, never a CDN
     const { pdfjs } = await import("@/lib/pdf");
     const buf = await file.arrayBuffer();
     const doc = await pdfjs.getDocument({ data: buf }).promise;

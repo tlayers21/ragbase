@@ -16,7 +16,7 @@ import {
 import { cn } from "@/lib/utils";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useSettings } from "@/hooks/useSettings";
-import { HISTORY_TOKEN_BUDGET } from "@/lib/config";
+import { COMPACT_THRESHOLD, HISTORY_TOKEN_BUDGET } from "@/lib/config";
 import type { ChatSession } from "@/types";
 
 function formatK(n: number): string {
@@ -278,7 +278,7 @@ export function Sidebar({
         {estimatedTokens > 0 && (() => {
           const pct = estimatedTokens / HISTORY_TOKEN_BUDGET;
           const barColor =
-            pct >= 0.9 ? "bg-red-500" : pct >= 0.75 ? "bg-amber-500" : "bg-green-500";
+            pct >= COMPACT_THRESHOLD ? "bg-red-500" : pct >= 0.75 ? "bg-amber-500" : "bg-green-500";
           return (
             <div className="px-2 pb-2">
               <div className="flex items-center justify-between mb-1">
@@ -321,7 +321,7 @@ export function Sidebar({
   );
 }
 
-// Floating button shown in place of the sidebar when it's collapsed.
+// Floating button shown in place of the sidebar when it's collapsed
 export function SidebarToggle({ onClick }: { onClick: () => void }) {
   return (
     <button

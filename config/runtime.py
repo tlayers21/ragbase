@@ -1,13 +1,3 @@
-"""Runtime identity and mutable settings.
-
-USER_ID and DEVICE_ID are generated on first launch and persisted to
-data/user_id.txt and data/device_id.txt. Mutable settings (telemetry opt-out,
-display name) live in data/settings.json and override config/settings.py defaults.
-
-Also holds QUERY_IN_PROGRESS, the process-wide signal that a user is waiting on a
-query right now - see the "Query priority" section below.
-"""
-
 import json
 import os
 import secrets
@@ -17,7 +7,12 @@ from pathlib import Path
 
 from config.logging import setup_logging
 from config.paths import DEVICE_ID_PATH, SETTINGS_JSON_PATH, USER_ID_PATH
-from config.settings import RERANKER_MIN_SCORE, TELEMETRY_ENABLED
+from config.settings import (
+    RELEVANCE_SCALE_MAX,
+    RELEVANCE_SCALE_MIN,
+    RERANKER_MIN_SCORE,
+    TELEMETRY_ENABLED,
+)
 
 logger = setup_logging(__name__)
 
@@ -91,29 +86,24 @@ def get_reranker_min_score() -> float:
     `from config.settings import ...` binds the name once at import, and rebinding
     the module default would never reach a caller that had already imported it.
     """
-    return float(_settings.get("reranker_min_score", RERANKER_MIN_SCORE))
+    stored = float(_settings.get("reranker_min_score", RERANKER_MIN_SCORE))
+    return max(RELEVANCE_SCALE_MIN, min(RELEVANCE_SCALE_MAX, stored))
 
 
 def set_reranker_min_score(score: float) -> None:
-    """Update the relevance floor and persist it. Takes effect on the next query."""
-    _settings["reranker_min_score"] = float(score)
+    """Update the relevance floor and persist it, clamped to the display scale.
+
+    Clamped here rather than only in the endpoint, so a hand-edited settings file
+    cannot put the floor below the scale and silently disable the relative cutoff.
+    """
+    clamped = max(RELEVANCE_SCALE_MIN, min(RELEVANCE_SCALE_MAX, float(score)))
+    _settings["reranker_min_score"] = clamped
     _save_settings()
-    logger.info(f"Reranker minimum score set to {score}")
+    logger.info(f"Reranker minimum score set to {clamped}")
 
 
 # -- Query priority ----------------------------------------------------------
-# Everything in RAGbase shares one machine and one Ollama process, so a graph
-# build (an LLM call per chunk, running for minutes) directly slows down any
-# query the user runs while it is in flight. This flag lets the graph worker see
-# that someone is actually waiting and back off between entity extractions
-# instead of the query and the build fighting for the same CPU.
-#
-# It is a hint, not a lock: the build is only asked to pause briefly, never
-# stopped, so a long build still makes progress while queries come and go.
-#
-# QUERY_IN_PROGRESS is the readable module-level flag; _active_queries is what
-# actually maintains it, because concurrent queries would otherwise have the
-# first one to finish clear the flag out from under the others.
+# A hint the graph worker backs off on, never a lock - _active_queries maintains it
 QUERY_IN_PROGRESS = False
 _active_queries = 0
 _query_lock = threading.Lock()
@@ -141,15 +131,7 @@ def is_query_in_progress() -> bool:
 
 
 # -- Startup warmup ----------------------------------------------------------
-# Warmup pulls every model into memory before the first request (main.py
-# lifespan). It is deliberately non-blocking so the server accepts connections
-# immediately, but a query fired while it runs fights the warmup for the same
-# GPU and either stalls for minutes or times out - which is exactly what a user
-# does when the UI looks ready. This state is what makes that visible: GET
-# /health reports it and the frontend gates its input on `ready`.
-#
-# Only the query-critical steps are registered, so the gate lifts as soon as a
-# query can be served; ingestion-only models keep warming behind it.
+# What GET /health reports - only query-critical steps register, so the gate lifts early
 _warmup_lock = threading.Lock()
 _warmup_steps: tuple[str, ...] = ()
 _warmup_completed: set[str] = set()

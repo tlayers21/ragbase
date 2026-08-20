@@ -31,9 +31,7 @@ def get_model(task: str) -> str:
 
 
 # -- Context windows -----------------------------------------------------------
-# Keyed by model, not by task: the window is a property of the loaded runner, and
-# two tasks sharing a model must share its window or every switch between them
-# tears the runner down and reloads several GB.
+# Keyed by model, not task - two tasks sharing a model must share its window
 _NUM_CTX = {
     MODEL_STANDARD: NUM_CTX_STANDARD,
     MODEL_FAST: NUM_CTX_FAST,
@@ -43,15 +41,9 @@ _NUM_CTX = {
 
 
 def get_num_ctx(model: str) -> int | None:
-    """Context window for a model, or None if it has no meaningful one.
+    """Context window for a model, or None to let Ollama pick.
 
-    None means "send no num_ctx and let Ollama decide" - correct only for the
-    embedding model, which has no generative KV cache to size. Every generation
-    model has an entry, because omitting num_ctx makes Ollama apply a 4096 default
-    and truncate longer prompts with no error (see config/settings.py).
-
-    Unknown models return None rather than raising: this is consulted on every
-    call, including from ml/ scripts that may name a model directly, and a missing
-    entry should degrade to Ollama's own default rather than break generation.
+    None is correct only for the embedding model; unknown models return None rather than
+    raising, so an ml/ script naming a model directly still runs.
     """
     return _NUM_CTX.get(model)

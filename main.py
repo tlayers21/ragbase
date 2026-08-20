@@ -49,10 +49,7 @@ async def lifespan(app: FastAPI):
     async def _warm_one(task: str) -> None:
         """Load one model. `reranker` is a HuggingFace cross-encoder, not an Ollama task."""
         if task == "reranker":
-            # warm_reranker(), not rerank(): rerank() swallows a load failure and
-            # returns the original order, so warming through it reported success
-            # for a model that never loaded and every later query degraded to
-            # unranked passthrough with nothing in the log to say so.
+            # warm_reranker(), not rerank() - rerank() swallows a load failure
             from retrieval.reranker import warm_reranker
 
             await asyncio.to_thread(warm_reranker)
@@ -60,26 +57,16 @@ async def lifespan(app: FastAPI):
         await asyncio.to_thread(warm, task)
 
     async def _warmup() -> None:
-        """
-        Warm every model, query-critical ones first.
+        """Warm every model, query-critical ones first.
 
-        Sequential and ordered on purpose: the frontend gates its UI on the
-        critical group (config/runtime.py), so those must not queue behind a
-        large model, and running them all at once would only have them fight
-        over the same GPU while the user waits.
-
-        WARMUP_BACKGROUND_TASKS is empty now, so in practice this loop is the
-        critical group alone - the concatenation stays because the split is the
-        contract, not the current contents. See the constant for why the
-        ingestion-only models were dropped from warmup entirely.
+        Sequential and ordered because the UI gates on the critical group, which must not
+        queue behind a large model.
         """
         logger.info("Warming up models...")
         for task in WARMUP_CRITICAL_TASKS + WARMUP_BACKGROUND_TASKS:
             warmup_started(task)
             try:
-                # Bounded because the frontend's gate has no escape hatch: a step
-                # that hangs rather than raises would never reach the `finally`,
-                # and the UI would stay blocked forever.
+                # Bounded - the gate has no escape, and a hung step never reaches `finally`
                 await asyncio.wait_for(_warm_one(task), timeout=WARMUP_TASK_TIMEOUT_SECONDS)
                 logger.info(f"  {task} warmed up")
             except TimeoutError:
@@ -90,8 +77,7 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.warning(f"  {task} warmup failed (non-blocking): {e}")
             finally:
-                # Also on failure and timeout - a model that won't load must not
-                # leave the UI waiting on it forever.
+                # Also on failure and timeout, or the UI waits forever on a dead model
                 warmup_finished(task)
             if task == WARMUP_CRITICAL_TASKS[-1] and WARMUP_BACKGROUND_TASKS:
                 logger.info("Ready for queries - remaining models warm in the background")
@@ -104,17 +90,7 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Shutting down RAGbase...")
-    # Hand back the several GB the query models hold. They are pinned for
-    # OLLAMA_KEEP_ALIVE (3h), which is a long time to keep a GPU occupied for a
-    # process that has exited - but the TTL is finite precisely because this hook
-    # is not guaranteed to run: it fires for Ctrl+C and SIGTERM, not for SIGHUP
-    # (closing the terminal), not for the `kill -9` scripts/start.sh opens with,
-    # and not for Force Quit. Best-effort by design, one model at a time, and a
-    # failure here must never turn a clean shutdown into a traceback.
-    #
-    # The reranker is deliberately absent: it is a HuggingFace model held in a
-    # module global (retrieval/reranker.py), not an Ollama runner, so it has no
-    # TTL to shorten and is freed when this process exits.
+    # Best-effort - this misses SIGHUP and kill -9, so the finite TTL is the backstop
     for task in ("embed", "answer"):
         try:
             await asyncio.to_thread(unload, task)

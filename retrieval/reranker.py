@@ -16,11 +16,9 @@ _tokenizer = None
 
 
 def _load():
-    """Load the BGE-Reranker-v2-m3 model and tokenizer once, reuse on every call.
+    """Load the BGE-Reranker-v2-m3 model and tokenizer once, reusing them on every call.
 
-    This is a base model loaded directly from HuggingFace - no trained checkpoint
-    needed. BGE-Reranker-v2-m3 loads cleanly in float32 with no NaN issues
-    (confirmed via direct testing: logits=[7.79], no NaN, dtype=float32).
+    A base model straight from HuggingFace, loaded in float32.
     """
     global _model, _tokenizer
     if _model is not None:
@@ -45,20 +43,10 @@ def _load():
 
 # -- Public API ------------------------------------------------------------
 def warm_reranker() -> None:
-    """
-    Load the cross-encoder and run one forward pass, letting failures propagate.
+    """Load the cross-encoder and run one real forward pass, letting failures propagate.
 
-    Startup warmup used to call `rerank("warmup", ["warmup"], [{}])` instead, and
-    that reported success no matter what happened: `rerank()` swallows a load
-    failure and returns the original order (correct on the query path - a query
-    should degrade, not 500), so a reranker that never loaded still logged
-    "reranker warmed up" while every later query silently fell back to unranked
-    passthrough with synthetic 1.0 scores. Warmup is the one caller that needs
-    the opposite behaviour, so it gets its own entry point.
-
-    Runs a real forward pass rather than just `_load()`: loading the weights and
-    executing on MPS are separate costs, and only doing both leaves the model
-    genuinely ready when the UI's gate lifts.
+    Warmup needs the opposite behaviour to `rerank()`, which swallows a load failure and
+    would report success for a reranker that never loaded.
     """
     model, tokenizer = _load()
     with torch.no_grad():
@@ -79,15 +67,10 @@ def rerank(
     metas: list[dict],
     top_k: int = MAX_FINAL_RESULTS,
 ) -> tuple[list[str], list[dict], list[float]]:
-    """
-    Rerank retrieved chunks using BGE-Reranker-v2-m3 cross-encoder.
+    """Rerank chunks with the BGE cross-encoder and return the top_k by relevance.
 
-    Scores each (question, chunk) pair and returns the top_k results sorted
-    by relevance score descending. Uses pure top-k ranking - no absolute
-    threshold, since raw cross-encoder scores are not calibrated to a fixed
-    cutoff, only relative ordering is meaningful.
-
-    Falls back to original order if loading fails.
+    Pure top-k with no absolute threshold, and falls back to the original order if loading
+    fails.
     """
     if not docs:
         return [], [], []

@@ -16,24 +16,18 @@ def embed(text: str) -> list[float]:
 
 
 def embed_batch(texts: list[str]) -> list[list[float]]:
-    """
-    Embed a list of texts using the underlying Ollama client.
-    Falls back to parallel per-item embedding if batch isn't supported.
+    """Embed a list of texts, falling back to parallel per-item calls if batching fails.
 
-    Exposed here so ingestion and other high-throughput paths can call
-    embeddings in batches and reduce RPC/IO overhead.
+    Exposed here so high-throughput ingestion paths can batch and cut RPC overhead.
     """
     return _ollama_embed_batch(texts)
 
 
 def chunk_text(text: str) -> list[str]:
-    """
-    Split text into overlapping chunks by word count.
-    Uses CHUNK_SIZE and CHUNK_OVERLAP from config.
+    """Split text into overlapping chunks by word count, using CHUNK_SIZE and CHUNK_OVERLAP.
 
-    Overlap ensures context is not lost at chunk boundaries -
-    the last CHUNK_OVERLAP words of each chunk appear again
-    at the start of the next chunk.
+    The overlap repeats each chunk's tail at the next chunk's head so context survives
+    the boundary.
     """
     if not text or not text.strip():
         return []

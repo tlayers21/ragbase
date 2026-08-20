@@ -42,21 +42,18 @@ different perspectives on the same topic are not contradictions."""
 
 
 def find_contradictions(source: str, user_id: str) -> int:
+    """Compare a source's chunks against similar chunks from other sources.
+
+    Flags both sides of a contradiction and returns the number found.
     """
-    Compare all chunks from a source against semantically similar chunks
-    from other sources. Flags both sides when a contradiction is found.
-    Returns the number of contradictions found.
-    """
-    # Document order rather than Chroma's arbitrary order. It does not change which
-    # contradictions are found - every chunk is compared either way - but it makes
-    # the progress logging follow the document instead of jumping around it.
+    # Document order so progress logging follows the document, not Chroma's ordering
     chunks = get_source_chunks(source, user_id)
 
     if not chunks:
         logger.warning(f"No chunks found for source '{source}'")
         return 0
 
-    # Still needed below: each chunk is queried against every *other* source's chunks.
+    # Still needed below: each chunk is queried against every *other* source's chunks
     collection = get_collection(user_id)
 
     contradiction_count = 0
@@ -68,12 +65,7 @@ def find_contradictions(source: str, user_id: str) -> int:
         )
 
         query_embedding = embed(doc)
-        # This query had no `where` at all - not even user_id - so it compared
-        # against every chunk in the collection, including sources still being
-        # ingested, and then wrote contradiction metadata onto them. Reuses the
-        # same filter builder as retrieval so "which sources are usable" has one
-        # answer across the app; `active_sources` is read per chunk because a job
-        # can finish partway through a check that runs for minutes.
+        # Read per chunk - a job can finish partway through a check that runs for minutes
         similar = collection.query(
             query_embeddings=[query_embedding],
             n_results=5,

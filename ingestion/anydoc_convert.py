@@ -13,8 +13,7 @@ logger = setup_logging(__name__)
 
 _WORKER = Path(__file__).parent / "_anydoc_worker.py"
 
-# Outcomes the caller can act on. Anything else means "anydoc could not do it" and
-# the caller should fall back (Docling for PDFs) or fail the job.
+# Outcomes the caller can act on - anything else means fall back or fail the job
 STATUS_OK = "ok"
 STATUS_OCR_REQUIRED = "ocr_required"
 
@@ -37,17 +36,10 @@ class AnydocResult:
 
 
 def to_markdown(source_path: str | Path, source_name: str) -> AnydocResult:
-    """
-    Convert a document to Markdown with anydoc, in a child process.
+    """Convert a document to Markdown with anydoc, in a child process.
 
-    The isolation is not paranoia. anydoc buffers the whole document in memory
-    while converting; a 381MB image-heavy PDF in the training corpus reached
-    13.5GB RSS and was SIGKILLed by the OS. In-process that kills the FastAPI
-    server and the ingestion worker along with it. In a child process it is just
-    a non-zero return code, and the caller falls back.
-
-    Never raises - every failure comes back as a non-ok status so ingestion can
-    degrade rather than crash.
+    Isolated because anydoc buffers the whole file and can be OOM-killed; never raises,
+    so a failure comes back as a non-ok status and ingestion falls back.
     """
     source_path = Path(source_path)
     out_fd, out_path = tempfile.mkstemp(suffix=".md")
@@ -67,7 +59,7 @@ def to_markdown(source_path: str | Path, source_name: str) -> AnydocResult:
 
     try:
         if proc.returncode != 0:
-            # Negative return codes are signals - SIGKILL (-9) is the OOM killer.
+            # Negative return codes are signals - SIGKILL (-9) is the OOM killer
             logger.warning(
                 f"anydoc worker exited with {proc.returncode} on '{source_name}': "
                 f"{proc.stderr.strip()[-500:]}"

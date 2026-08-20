@@ -4,46 +4,38 @@ import tempfile
 from pathlib import Path
 
 import dspy
+import httpx
 
 from config.logging import setup_logging
 from config.models import get_model
-from config.paths import DATA_DIR
 from config.settings import (
     HANDWRITTEN_IMAGE_THRESHOLD,
     HANDWRITTEN_TEXT_THRESHOLD,
-    OLLAMA_URL,
     PDF_ANYDOC_MAX_BYTES,
     PDF_IMAGE_SCALE,
     PDF_SCANNED_CHARS_PER_PAGE,
     PDF_TEXT_PROBE_PAGES,
     SUPPORTED_PDF_EXTENSIONS,
-    VISION_TIMEOUT_SECONDS,
 )
 from ingestion.queue import is_cancelled
-from retrieval.pipeline import TextCleanup, TranscriptionRefinement
+from retrieval.pipeline import TextCleanup, TranscriptionRefinement, make_lm
+from utils.ollama_client import vision
 
 from . import anydoc_convert
 from .base import BaseIngestor, IngestionCancelled
-from .helpers import describe_image, vision_with_timeout
+from .helpers import describe_image, progress_checkpoint_path
 
 logger = setup_logging(__name__)
 
+# Attempts per page before it is left blank and the job continues
+MAX_TRANSCRIBE_RETRIES = 3
+
 
 class PdfIngestor(BaseIngestor):
-    """
-    Ingestor for PDF files. Routes each file to one of three paths:
+    """Ingestor for PDFs, routing to anydoc (typed), Qwen2.5-VL (scanned) or Docling.
 
-    - **Typed PDFs -> anydoc.** Pure-Rust Markdown conversion, seconds rather than
-      minutes, and the output is already clean GFM so it needs no LLM cleanup pass.
-    - **Scanned/handwritten PDFs -> Qwen2.5-VL.** Pages are rendered to images and
-      transcribed one at a time, with page-level resume.
-    - **Anything anydoc can't handle -> Docling.** The original pipeline, kept as a
-      fallback for oversized files and unexpected conversion failures.
-
-    `describe_images` is opt-in per file (the "Describe diagrams" checkbox in the
-    UI). Embedded figures are largely vector drawings, which only Docling's layout
-    model detects, so describing them means paying for a Docling pass on top of
-    anydoc - worth it for slide decks full of diagrams, wasteful for prose.
+    `describe_images` is opt-in per file because figure description needs a Docling pass
+    on top of anydoc.
     """
 
     def __init__(self, user_id: str, job_id: str | None = None, describe_images: bool = False):
@@ -80,8 +72,7 @@ class PdfIngestor(BaseIngestor):
             return self._append_image_descriptions(result.markdown, source_path, source_name)
 
         if result.needs_ocr:
-            # The text probe above can be fooled by a PDF whose text layer is a few
-            # stray page numbers. anydoc inspects every page, so trust it over the probe.
+            # anydoc inspects every page, so trust it over the sampled probe
             logger.info(f"anydoc reports '{source_name}' needs OCR, switching to VLM mode")
             return self._extract_handwritten(source_path, source_name)
 
@@ -93,15 +84,10 @@ class PdfIngestor(BaseIngestor):
 
     # -- Routing helpers -------------------------------------------------------
     def _looks_scanned(self, pdf_path: Path, source_name: str) -> bool:
-        """
-        Decide whether a PDF has a usable text layer, by sampling pages with PyMuPDF.
+        """Decide whether a PDF has a usable text layer by sampling pages with PyMuPDF.
 
-        This runs before anydoc on purpose. anydoc buffers the entire file to answer
-        the same question, and on large scanned books that means gigabytes of RAM for
-        an answer PyMuPDF gives in well under a second from page metadata.
-
-        Returning False only means "there is text" - anydoc still gets the final say
-        via its own `OCR is required` verdict.
+        Runs before anydoc, which would buffer the whole file to answer the same question;
+        False only means "there is text", and anydoc still has the final say.
         """
         try:
             import pymupdf
@@ -140,14 +126,10 @@ class PdfIngestor(BaseIngestor):
         return per_page < PDF_SCANNED_CHARS_PER_PAGE
 
     def _append_image_descriptions(self, markdown: str, pdf_path: Path, source_name: str) -> str:
-        """
-        Optionally describe the PDF's figures and append them to anydoc's Markdown.
+        """Optionally describe the PDF's figures and append them to anydoc's Markdown.
 
-        anydoc returns one blob with no page provenance, so descriptions can't be
-        interleaved the way the Docling path does it - they are appended as a trailing
-        section tagged with the page each figure came from. Chunking is by word count,
-        so the descriptions still become retrievable chunks; they just aren't adjacent
-        to their page's prose.
+        Appended as a trailing section rather than interleaved, because anydoc returns one
+        blob with no page provenance.
         """
         if not self.describe_images:
             return markdown
@@ -187,22 +169,14 @@ class PdfIngestor(BaseIngestor):
         return False
 
     def _extract_handwritten(self, pdf_path: Path, source_name: str) -> str:
-        """
-        Extract text from a handwritten PDF by converting each page to an image
-        and running Qwen2.5-VL on it. Saves progress after each page so the job
-        can resume if interrupted.
+        """Transcribe a scanned PDF page by page with Qwen2.5-VL, saving progress after each.
 
-        Each page gets up to MAX_RETRIES attempts. On each retry the timeout
-        is increased to give Qwen2.5-VL more time for difficult pages.
+        Each page gets up to MAX_RETRIES attempts, with the timeout raised on each retry.
         """
-        # pdf2image is a heavy optional dependency - import lazily so it's
-        # only loaded when a handwritten PDF is actually being transcribed.
+        # Heavy optional dependency - imported only when a handwritten PDF needs it
         from pdf2image import convert_from_path
 
-        MAX_RETRIES = 3
-        BASE_TIMEOUT = VISION_TIMEOUT_SECONDS
-
-        progress_file = DATA_DIR / f"{source_name}_progress.json"
+        progress_file = progress_checkpoint_path(source_name)
 
         # Resume from previous progress if available
         if progress_file.exists():
@@ -220,15 +194,14 @@ class PdfIngestor(BaseIngestor):
         logger.info(f"Found {pages_total} pages, starting from page {start_page + 1}")
         self._set_estimate(pages_total * 45)  # ~45s/page observed for Qwen2.5-VL transcription
 
-        # Write the progress file before the first page so a crash mid-page-1
-        # still leaves a resumable state on disk
+        # Written before page 1 so a crash mid-page still leaves a resumable state
         with open(progress_file, "w") as f:
             json.dump(
                 {"text": full_text, "last_page": start_page - 1, "pages_total": pages_total}, f
             )
 
         refine_transcription = dspy.Predict(TranscriptionRefinement)
-        refine_lm = dspy.LM(model=f"ollama/{get_model('text_cleanup')}", api_base=OLLAMA_URL)
+        refine_lm = make_lm(get_model("text_cleanup"))
         refine_transcription.set_lm(refine_lm)
 
         for i, page in enumerate(pages[start_page:], start=start_page):
@@ -236,8 +209,7 @@ class PdfIngestor(BaseIngestor):
                 raise IngestionCancelled(f"Ingestion of '{source_name}' was cancelled")
 
             logger.info(f"Processing page {i + 1}/{pages_total} of '{source_name}'...")
-            # i is absolute even on a resumed job, so a resume correctly picks the
-            # bar up where it left off rather than restarting at page 1.
+            # Absolute even on a resumed job, so the bar resumes rather than restarts
             self._set_progress(i + 1, pages_total, "page")
 
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
@@ -247,34 +219,7 @@ class PdfIngestor(BaseIngestor):
             page_text = None
 
             try:
-                for attempt in range(1, MAX_RETRIES + 1):
-                    # Each retry gets more time
-                    timeout = BASE_TIMEOUT * attempt
-                    logger.info(
-                        f"Page {i + 1} - attempt {attempt}/{MAX_RETRIES} (timeout: {timeout}s)"
-                    )
-                    try:
-                        page_text = self._transcribe_page(tmp_path, i + 1, timeout=timeout)
-                        break  # Success - stop retrying
-                    except TimeoutError:
-                        if attempt < MAX_RETRIES:
-                            logger.warning(
-                                f"Page {i + 1} timed out on attempt {attempt}, "
-                                f"retrying with {timeout * 2}s timeout..."
-                            )
-                        else:
-                            logger.error(
-                                f"Page {i + 1} failed all {MAX_RETRIES} attempts. "
-                                f"Leaving blank - you can re-ingest this source to retry."
-                            )
-                    except Exception as e:
-                        logger.error(f"Page {i + 1} attempt {attempt} failed: {e}")
-                        if attempt == MAX_RETRIES:
-                            logger.error(
-                                f"Page {i + 1} failed all {MAX_RETRIES} attempts. "
-                                f"Leaving blank - you can re-ingest to retry."
-                            )
-                        break
+                page_text = self._transcribe_with_retries(tmp_path, i + 1)
 
                 if page_text:
                     try:
@@ -311,8 +256,36 @@ class PdfIngestor(BaseIngestor):
 
         return full_text
 
-    def _transcribe_page(self, image_path: str, page_num: int, timeout: int | None = None) -> str:
-        timeout = timeout or VISION_TIMEOUT_SECONDS
+    def _transcribe_with_retries(self, image_path: str, page_num: int) -> str | None:
+        """Transcribe one page, retrying a timed-out attempt and giving up on any other error.
+
+        Returns None if every attempt failed, which leaves the page blank rather than
+        failing the whole job.
+        """
+        for attempt in range(1, MAX_TRANSCRIBE_RETRIES + 1):
+            logger.info(f"Page {page_num} - attempt {attempt}/{MAX_TRANSCRIBE_RETRIES}")
+            try:
+                return self._transcribe_page(image_path, page_num)
+            except (TimeoutError, httpx.TimeoutException, httpx.TransportError):
+                if attempt < MAX_TRANSCRIBE_RETRIES:
+                    logger.warning(f"Page {page_num} timed out on attempt {attempt}, retrying")
+                else:
+                    logger.error(
+                        f"Page {page_num} failed all {MAX_TRANSCRIBE_RETRIES} attempts. "
+                        f"Leaving blank - you can re-ingest this source to retry."
+                    )
+            except Exception as e:
+                logger.error(f"Page {page_num} attempt {attempt} failed: {e}")
+                if attempt == MAX_TRANSCRIBE_RETRIES:
+                    logger.error(
+                        f"Page {page_num} failed all {MAX_TRANSCRIBE_RETRIES} attempts. "
+                        f"Leaving blank - you can re-ingest to retry."
+                    )
+                break
+        return None
+
+    def _transcribe_page(self, image_path: str, page_num: int) -> str:
+        """Transcribe one rendered page, bounded by the shared client's socket timeout."""
         prompt = (
             "Transcribe the handwritten content on this page verbatim, line by line, "
             "exactly as it appears. Do not paraphrase, summarize, explain, or reason "
@@ -323,7 +296,7 @@ class PdfIngestor(BaseIngestor):
             "symbol is genuinely illegible, write [illegible] in its place - do not "
             "guess or substitute a plausible-looking alternative."
         )
-        return vision_with_timeout(image_path, prompt, task="vision_handwrite", timeout=timeout)
+        return vision(image_path, prompt, task="vision_handwrite")
 
     # -- Docling fallback ------------------------------------------------------
     def _convert_with_docling(
@@ -336,20 +309,16 @@ class PdfIngestor(BaseIngestor):
         the text and Docling is needed solely to locate figures: OCR and table
         structure analysis are both switched off, leaving only layout detection.
         """
-        # Docling is a heavy optional dependency - import lazily so it's only
-        # loaded when a PDF actually needs it.
+        # Heavy optional dependency - imported only when a PDF needs it
         from docling.datamodel.base_models import InputFormat
         from docling.datamodel.pipeline_options import PdfPipelineOptions, RapidOcrOptions
         from docling.document_converter import DocumentConverter, PdfFormatOption
 
         pipeline_options = PdfPipelineOptions(
-            # Without this, PictureItem.get_image() returns None for every image and
-            # _describe_images() silently finds nothing to describe.
+            # Without this PictureItem.get_image() returns None for every image
             generate_picture_images=True,
             images_scale=PDF_IMAGE_SCALE,
-            # Docling defaults ocr_options.kind to "auto", which resolves to whichever
-            # OCR engine happens to be installed. Pinning RapidOCR keeps extraction
-            # reproducible instead of changing silently when dependencies shift.
+            # Pinned because Docling's "auto" resolves to whichever engine is installed
             ocr_options=RapidOcrOptions(),
         )
         if for_images_only:
@@ -389,8 +358,7 @@ class PdfIngestor(BaseIngestor):
         Extract text from a typed PDF using Docling.
         Describes embedded images using qwen2.5vl and interleaves them by page.
         """
-        # Gated on the same per-file opt-in as the anydoc path, so the checkbox means
-        # the same thing no matter which extractor handled the file.
+        # Same per-file opt-in as the anydoc path, so the checkbox means one thing
         images_by_page = self._describe_images(doc, source_name) if self.describe_images else {}
         text = self._extract_typed_pages(doc, source_name, images_by_page)
 
@@ -414,7 +382,7 @@ class PdfIngestor(BaseIngestor):
         cleanup fails, that page falls back to its original raw text unchanged.
         """
         cleanup = dspy.Predict(TextCleanup)
-        cleanup_lm = dspy.LM(model=f"ollama/{get_model('text_cleanup')}", api_base=OLLAMA_URL)
+        cleanup_lm = make_lm(get_model("text_cleanup"))
         cleanup.set_lm(cleanup_lm)
         page_texts: dict[int, list[str]] = {}
 
@@ -433,18 +401,14 @@ class PdfIngestor(BaseIngestor):
 
         images_by_page = images_by_page or {}
         cleaned_pages: list[str] = []
-        # Union of both maps: a page can hold only a diagram and no extractable text,
-        # and its description would be dropped if we walked text pages alone.
+        # Union of both maps - a diagram-only page has no text page to walk
         sorted_pages = sorted(set(page_texts) | set(images_by_page))
 
         for position, page_no in enumerate(sorted_pages, start=1):
             if self.job_id and is_cancelled(self.job_id):
                 raise IngestionCancelled(f"Ingestion of '{source_name}' was cancelled")
 
-            # Counts pages that produced content, not the PDF's true page count -
-            # sorted_pages is the union of the text and image maps, so a wholly empty
-            # page never appears. The total is therefore a lower bound, which is the
-            # right way round: the bar can't stall short of 100%.
+            # Pages that produced content, so the total is a lower bound and cannot stall
             self._set_progress(position, len(sorted_pages), "page")
 
             raw_page_text = "\n".join(page_texts.get(page_no, []))
@@ -465,8 +429,7 @@ class PdfIngestor(BaseIngestor):
                         f"using raw text"
                     )
 
-            # Descriptions go after the page's prose so a chunk covering this page
-            # carries both, and cleanup never sees VLM output as "raw text to fix".
+            # After the prose, so a chunk carries both and cleanup never rewrites VLM output
             descriptions = images_by_page.get(page_no, [])
             if descriptions:
                 blocks = "\n".join(f"[Image: {d}]" for d in descriptions)
@@ -477,14 +440,10 @@ class PdfIngestor(BaseIngestor):
         return "\n\n".join(cleaned_pages)
 
     def _describe_images(self, doc, source_name: str) -> dict[int, list[str]]:
-        """
-        Describe each embedded image with Qwen2.5-VL, keyed by the page it appears on.
+        """Describe each embedded image with Qwen2.5-VL, returning {page_no: [description, ...]}.
 
-        Returns {page_no: [description, ...]} so the caller can interleave descriptions
-        with that page's text. Keying by page (rather than substituting Docling's
-        `<!-- image -->` markdown placeholder) is deliberate: page text is assembled
-        from `doc.texts`, which never contains those placeholders, so placeholder
-        substitution silently matched nothing and every image was dropped.
+        Keyed by page rather than by Docling's `<!-- image -->` placeholder, which never
+        appears in `doc.texts` and so matched nothing.
         """
         images_by_page: dict[int, list[str]] = {}
         described = 0
@@ -499,8 +458,7 @@ class PdfIngestor(BaseIngestor):
                 page_no = picture.prov[0].page_no
 
                 try:
-                    # Requires generate_picture_images=True on the pipeline options -
-                    # otherwise this is None for every picture.
+                    # None for every picture unless generate_picture_images=True
                     image = picture.get_image(doc)
                     if image is None:
                         continue
