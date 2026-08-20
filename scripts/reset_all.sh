@@ -66,11 +66,11 @@ echo "Source files cleared"
 #    mtime and leaves it in place; each browser remembers the last value it acted on,
 #    so every one of them clears rather than only whichever asked first.
 touch data/reset_sessions_flag
-echo "Session reset marker touched — every browser clears chat history on next load"
+echo "Session reset marker touched - every browser clears chat history on next load"
 
 echo ""
 echo "=== Reset complete ==="
-echo "Preserved: data/user_id.txt, data/device_id.txt (identity — deleting either"
+echo "Preserved: data/user_id.txt, data/device_id.txt (identity - deleting either"
 echo "           orphans every ChromaDB collection and graph table)"
 echo "           data/settings.json (telemetry + display name)"
 echo "           data/training_data/ (your batch-ingest corpus)"

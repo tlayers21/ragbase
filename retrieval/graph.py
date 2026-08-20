@@ -11,7 +11,11 @@ from config.logging import setup_logging
 from config.models import get_model
 from config.paths import KNOWLEDGE_GRAPH_DB_PATH
 from config.runtime import is_query_in_progress
-from config.settings import GRAPH_YIELD_MAX_SECONDS, GRAPH_YIELD_SLEEP_SECONDS
+from config.settings import (
+    GRAPH_MAX_CONSECUTIVE_FAILURES,
+    GRAPH_YIELD_MAX_SECONDS,
+    GRAPH_YIELD_SLEEP_SECONDS,
+)
 from utils.ollama_client import generate_stream
 
 logger = setup_logging(__name__)
@@ -183,11 +187,25 @@ def _validate_extracted(extracted: dict, source: str) -> dict:
     return {"entities": valid_entities, "relationships": valid_relationships}
 
 
+class EntityExtractionUnavailable(RuntimeError):
+    """The extraction *call* failed - Ollama timed out, refused, or is unreachable.
+
+    Distinct from a chunk the model answered badly, which is handled inline and
+    skipped. This one says nothing is wrong with the chunk and the next chunk will
+    almost certainly fail the same way, so `build_from_chunks` counts these and
+    gives up rather than grinding through the whole document one timeout at a time.
+    """
+
+
 def extract_entities(text: str, source: str) -> dict:
     """
     Use qwen2.5:3b via Ollama to extract entities and relationships from a text chunk.
     Returns a dict with 'entities' and 'relationships' lists, validated so
     every entry is safe to insert.
+
+    Raises EntityExtractionUnavailable if the model call itself fails. A chunk whose
+    output can't be parsed is not an error: it returns empty lists and the build
+    moves on, because one unparseable chunk says nothing about the next one.
     """
     text = _strip_latex(text)
 
@@ -206,8 +224,16 @@ Respond with valid JSON only in this exact format:
 
 Only include clear factual entities and relationships. Output JSON only, no explanation."""
 
+    # Split deliberately in two. Whatever the *call* raises is a health problem
+    # with Ollama and propagates; whatever *parsing* raises is a problem with this
+    # one chunk's output and is swallowed. Catching both together is what let a
+    # wedged model look identical to 155 unhelpful chunks.
     try:
         raw = "".join(generate_stream(prompt, model=get_model("entity_extraction")))
+    except Exception as e:
+        raise EntityExtractionUnavailable(f"Entity extraction call failed: {e}") from e
+
+    try:
         raw = (
             raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
         )  # models often fence JSON
@@ -215,7 +241,7 @@ Only include clear factual entities and relationships. Output JSON only, no expl
         parsed = json.loads(repaired) if isinstance(repaired, str) else repaired
         return _validate_extracted(parsed, source)
     except Exception as e:
-        logger.warning(f"Entity extraction failed for '{source}': {e}")
+        logger.warning(f"Unparseable entity extraction for '{source}', skipping chunk: {e}")
         return {"entities": [], "relationships": []}
 
 
@@ -271,6 +297,10 @@ def build_from_chunks(
     whole queue-status file under a lock the query path also contends for, and a
     several-hundred-chunk build would otherwise do that several hundred times to move
     a progress bar by less than a pixel.
+
+    Raises EntityExtractionUnavailable after GRAPH_MAX_CONSECUTIVE_FAILURES calls
+    fail in a row, which fails the job and frees the queue. See the constant for
+    why a per-call timeout alone is not enough.
     """
     user_id = _validate_user_id(user_id)
     conn = _get_connection(user_id)
@@ -279,6 +309,7 @@ def build_from_chunks(
     total_edges = 0
     stopped = False
     last_pct = -1
+    consecutive_failures = 0
 
     try:
         for done, chunk in enumerate(chunks):
@@ -295,7 +326,18 @@ def build_from_chunks(
                     on_progress(done + 1, len(chunks))
 
             _yield_to_queries(source)
-            extracted = extract_entities(chunk, source)
+            try:
+                extracted = extract_entities(chunk, source)
+            except EntityExtractionUnavailable as e:
+                consecutive_failures += 1
+                logger.warning(
+                    f"Entity extraction unavailable for '{source}' "
+                    f"({consecutive_failures}/{GRAPH_MAX_CONSECUTIVE_FAILURES}): {e}"
+                )
+                if consecutive_failures >= GRAPH_MAX_CONSECUTIVE_FAILURES:
+                    raise
+                continue
+            consecutive_failures = 0
 
             # Re-checked after extraction because extraction is the slow part
             # (one LLM call, seconds). The delete path cancels the job and then

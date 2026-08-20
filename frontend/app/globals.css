@@ -108,7 +108,7 @@ body {
   background: var(--border);
 }
 
-/* No browser default focus rings anywhere — interactive containers handle
+/* No browser default focus rings anywhere - interactive containers handle
    their own focus-within border/ring styling at the component level. */
 *,
 *:focus,

@@ -232,6 +232,7 @@ export default function HomePage() {
           jobs={jobs}
           onCancelJob={cancelJob}
           onJobsInvalidated={hideJobsForSource}
+          onExplainSource={chat.explainSource}
         />
       </div>
     </>

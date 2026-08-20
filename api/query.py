@@ -6,17 +6,20 @@ import time
 from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
 
-from fastapi import APIRouter, Form, Request, UploadFile
+from fastapi import APIRouter, Form, HTTPException, Request, UploadFile
 from fastapi import File as FastAPIFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from api.guards import require_finished
 from config.logging import setup_logging
 from config.models import get_model
 from config.runtime import USER_ID, query_finished, query_started
 from config.settings import (
     ANSWER_THINKING_ENABLED,
     ATTACHMENT_TEXT_MAX_CHARS,
+    EXPLAIN_BATCH_CHUNKS,
+    EXPLAIN_MAX_CHUNKS,
     OLLAMA_KEEP_ALIVE,
     SUPPORTED_IMAGE_EXTENSIONS,
     SUPPORTED_PDF_EXTENSIONS,
@@ -30,9 +33,11 @@ from retrieval.pipeline import (
     build_answer_prompt,
     build_context,
     build_direct_prompt,
+    build_explain_prompt,
     format_history,
 )
 from utils.cache import get_cached_response, set_cached_response
+from utils.chromadb_client import get_source_chunks
 from utils.ollama_client import generate_stream
 from utils.telemetry import send_telemetry
 
@@ -53,7 +58,7 @@ _SYSTEM_PROMPT = (
 )
 
 
-def _answer_stream(prompt: str) -> Generator[str, None, None]:
+def _answer_stream(prompt: str, system: str = _SYSTEM_PROMPT) -> Generator[str, None, None]:
     """
     The single entry point for every user-facing answer.
 
@@ -67,17 +72,25 @@ def _answer_stream(prompt: str) -> Generator[str, None, None]:
     callers are ingestion-only tasks that should hand their runner slot back;
     the answer model is the one that must still be resident when the user asks
     their next question, however long they took to ask it.
+
+    `system` is overridable for the explain endpoint alone, which needs one that
+    permits long structured output. Everything else takes the defaults; a second
+    copy of the thinking toggle is exactly what this function exists to prevent.
+
+    The context window is not passed here. `generate_stream` applies the answer
+    model's own (config/models.py::get_num_ctx), which is what lets explain and an
+    ordinary question share one loaded runner instead of reloading between them.
     """
     return generate_stream(
         prompt,
-        system=_SYSTEM_PROMPT,
+        system=system,
         model=get_model("answer"),
         think=ANSWER_THINKING_ENABLED,
         keep_alive=OLLAMA_KEEP_ALIVE,
     )
 
 
-async def _aiter_answer(prompt: str) -> AsyncGenerator[str, None]:
+async def _aiter_answer(prompt: str, system: str = _SYSTEM_PROMPT) -> AsyncGenerator[str, None]:
     """
     Pump `_answer_stream` without holding the event loop for the whole answer.
 
@@ -88,7 +101,7 @@ async def _aiter_answer(prompt: str) -> AsyncGenerator[str, None]:
     it. One `to_thread` per `next()` restores both. The sync `/query/direct`
     generator does not need this - Starlette already iterates it in a threadpool.
     """
-    gen = _answer_stream(prompt)
+    gen = _answer_stream(prompt, system=system)
     sentinel = object()
     while True:
         # Sequential awaits, so the generator is only ever advanced by one thread
@@ -407,6 +420,141 @@ async def query_direct(req: QueryRequest) -> StreamingResponse:
         )
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+# -- Explain in depth ---------------------------------------------------------
+# The one query path that does no retrieval and no ranking. Every other endpoint
+# answers a question, so it wants the few chunks most relevant to that question;
+# this one describes a document, so relevance has nothing to rank and the whole
+# source is the input. That inverts every assumption in the pipeline, which is why
+# it builds its own context instead of reusing RAGPipeline.
+_EXPLAIN_SYSTEM_PROMPT = (
+    "You are a helpful AI assistant for a personal knowledge base. You are explaining "
+    "one document from that knowledge base to its owner. Be thorough and well "
+    "organised: use markdown headings, and take as much room as the material needs. "
+    "Ground every statement in the document you are given, and do not invent material "
+    "it does not contain."
+)
+
+
+class ExplainRequest(BaseModel):
+    source: str
+
+
+def _explain_context(chunks: list[tuple[str, dict]]) -> str:
+    """Format whole-source chunks for the prompt, in document order."""
+    docs = [doc for doc, _ in chunks]
+    metas = [meta for _, meta in chunks]
+    return build_context(docs, metas)
+
+
+def _summarize_batch(chunks: list[tuple[str, dict]], source: str, part: int, total: int) -> str:
+    """Map step: condense one batch of chunks so an oversized source still fits.
+
+    Runs on the fast model, not the answer model - this is a high-volume,
+    low-judgement job, and `generate_stream` would otherwise silently default to
+    qwen3 and make an already-slow path far slower.
+
+    `num_ctx` is mandatory here, not a tuning knob: a batch is several times Ollama's
+    default window, which truncates without erroring. Skipping it would mean summaries
+    built from the first third of each batch, and a final explanation confidently
+    describing a document most of which never reached a model.
+    """
+    prompt = (
+        f"Below is part {part} of {total} of a document titled '{source}'.\n\n"
+        "Summarize this part in detail. Keep every key idea, definition, result and "
+        "conclusion, along with enough specifics that the summary could stand in for "
+        "the text itself. Do not add anything that is not present.\n\n"
+        f"Text:\n{_explain_context(chunks)}\n\nSummary:"
+    )
+    return "".join(generate_stream(prompt, model=get_model("summarize"))).strip()
+
+
+@router.post("/explain")
+async def query_explain(req: ExplainRequest) -> StreamingResponse:
+    """
+    Explain one source in depth, using all of its chunks and no ranking at all.
+
+    Retrieval is skipped outright rather than run with a permissive threshold: the
+    reranker scores chunks against a *question*, and there is no question here, so
+    every score it produced would be noise applied as an ordering. Chunks go in in
+    document order instead, which is the order the explanation should follow.
+
+    Sources up to EXPLAIN_MAX_CHUNKS go to the model whole. Larger ones are
+    summarized in batches first and the summaries explained - slower, and one
+    remove from the source text, but the alternative on a 155-chunk document is a
+    prompt nearly 3x the model's context window, which Ollama would silently
+    truncate rather than reject.
+
+    Same SSE format as /query/stream. [SOURCES] carries the source name with no
+    chunks: the UI's citation chips are per-chunk match scores, and nothing here
+    was matched.
+    """
+    t0 = time.perf_counter()
+    await require_finished(req.source)
+
+    chunks = await asyncio.to_thread(get_source_chunks, req.source, USER_ID)
+    if not chunks:
+        raise HTTPException(status_code=404, detail=f"Source '{req.source}' not found")
+
+    logger.info(f"Explain request for '{req.source}' ({len(chunks)} chunks)")
+
+    async def event_stream() -> AsyncGenerator[str, None]:
+        yield f"data: [STAGE]{json.dumps({'stage': 'loading_source'})}\n\n"
+
+        oversized = len(chunks) > EXPLAIN_MAX_CHUNKS
+        if oversized:
+            batches = [
+                chunks[i : i + EXPLAIN_BATCH_CHUNKS]
+                for i in range(0, len(chunks), EXPLAIN_BATCH_CHUNKS)
+            ]
+            logger.info(
+                f"'{req.source}' exceeds {EXPLAIN_MAX_CHUNKS} chunks - "
+                f"summarizing in {len(batches)} batches first"
+            )
+            yield f"data: [STAGE]{json.dumps({'stage': 'summarizing_source'})}\n\n"
+
+            summaries = []
+            for i, batch in enumerate(batches):
+                # Heartbeat per batch: the map step is minutes of silence on a large
+                # source, and an SSE connection with nothing on it looks identical to
+                # a hung one from the browser's side.
+                yield "data: [HEARTBEAT]\n\n"
+                summaries.append(
+                    await asyncio.to_thread(
+                        _summarize_batch, batch, req.source, i + 1, len(batches)
+                    )
+                )
+            context = "\n\n".join(summaries)
+        else:
+            context = _explain_context(chunks)
+
+        prompt = build_explain_prompt(req.source, context, partial=oversized)
+
+        yield f"data: [STAGE]{json.dumps({'stage': 'generating'})}\n\n"
+        async for token in _aiter_answer(prompt, system=_EXPLAIN_SYSTEM_PROMPT):
+            if token:
+                yield _sse_token(token)
+
+        # No chunks: see the docstring. `sources` still carries the name so the
+        # frontend can tell which document the message was about.
+        sources_payload = json.dumps({"sources": [req.source], "scores": [], "chunks": []})
+        yield f"data: [SOURCES]{sources_payload}\n\n"
+        yield _sse_timing(t0)
+        yield "data: [DONE]\n\n"
+
+        latency = time.perf_counter() - t0
+        logger.info(f"Explain latency for '{req.source}': {latency:.2f}s (oversized={oversized})")
+        send_telemetry(
+            "query_explain",
+            {
+                "latency": round(latency, 2),
+                "chunks": len(chunks),
+                "oversized": oversized,
+            },
+        )
+
+    return StreamingResponse(_with_query_priority(event_stream()), media_type="text/event-stream")
 
 
 # -- Attachments -------------------------------------------------------------

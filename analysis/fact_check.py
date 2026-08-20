@@ -1,7 +1,7 @@
 from analysis.common import parse_verdict, update_chunk_metadata
 from config.logging import setup_logging
 from config.models import get_model
-from utils.chromadb_client import get_collection
+from utils.chromadb_client import get_source_chunks
 from utils.ollama_client import generate_stream
 
 logger = setup_logging(__name__)
@@ -40,16 +40,11 @@ def check_source_facts(source: str, user_id: str) -> list[dict]:
     Fact-check all chunks for a source. Stores results back into ChromaDB.
     Returns list of results with verdict and reason per chunk.
     """
-    collection = get_collection(user_id)
-    results = collection.get(where={"source": source}, include=["documents", "metadatas"])
+    chunks = get_source_chunks(source, user_id)
 
-    if not results["ids"]:
+    if not chunks:
         logger.warning(f"No chunks found for source '{source}'")
         return []
-
-    chunks = sorted(
-        zip(results["documents"], results["metadatas"]), key=lambda x: x[1].get("chunk_index", 0)
-    )
 
     flagged_count = 0
     output = []

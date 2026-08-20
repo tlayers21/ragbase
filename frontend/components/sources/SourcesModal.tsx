@@ -11,6 +11,7 @@ import {
   ChevronLeft,
   Hourglass,
   GitBranch,
+  BookOpen,
 } from "lucide-react";
 import {
   fetchSources,
@@ -374,6 +375,7 @@ interface SourceCardProps {
   onRequestDelete: (source: string) => void;
   onConfirmDelete: (source: string) => void;
   onCancelConfirm: () => void;
+  onExplain: (source: string) => void;
 }
 
 function SourceCard({
@@ -383,6 +385,7 @@ function SourceCard({
   onRequestDelete,
   onConfirmDelete,
   onCancelConfirm,
+  onExplain,
 }: SourceCardProps) {
   return (
     <div
@@ -412,13 +415,22 @@ function SourceCard({
             </button>
           </div>
         ) : (
-          <button
-            onClick={(e) => { e.stopPropagation(); onRequestDelete(source.source); }}
-            className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-foreground-muted hover:text-destructive transition-all"
-            title="Delete source"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
+          <div className="flex items-center gap-0.5 flex-shrink-0">
+            <button
+              onClick={(e) => { e.stopPropagation(); onExplain(source.source); }}
+              className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-foreground-muted hover:text-foreground transition-all"
+              title="Explain this source in depth"
+            >
+              <BookOpen className="h-3.5 w-3.5" />
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onRequestDelete(source.source); }}
+              className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-foreground-muted hover:text-destructive transition-all"
+              title="Delete source"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
         )}
       </div>
 
@@ -563,6 +575,12 @@ interface SourcesModalProps {
    * source because DELETE /documents/{source} cancels the job without reporting its id.
    */
   onJobsInvalidated?: (source: string) => void;
+  /**
+   * Ask for a whole-source explanation. The modal closes itself first - the
+   * answer streams into the chat behind it, and leaving the overlay up would
+   * hide the thing the click just started.
+   */
+  onExplainSource?: (source: string) => void;
 }
 
 export function SourcesModal({
@@ -572,6 +590,7 @@ export function SourcesModal({
   jobs,
   onCancelJob,
   onJobsInvalidated,
+  onExplainSource,
 }: SourcesModalProps) {
   const [sources, setSources] = useState<SourceSummary[]>([]);
   const [isLoadingSources, setIsLoadingSources] = useState(false);
@@ -620,6 +639,14 @@ export function SourcesModal({
   const handleRequestDelete = useCallback((source: string) => {
     setConfirming(source);
   }, []);
+
+  const handleExplain = useCallback(
+    (source: string) => {
+      onClose();
+      onExplainSource?.(source);
+    },
+    [onClose, onExplainSource]
+  );
 
   const handleConfirmDelete = useCallback(
     async (source: string) => {
@@ -738,7 +765,7 @@ export function SourcesModal({
                   {query
                     ? "No sources match your filter."
                     : activeJobs.length > 0
-                      ? "Nothing finished yet — the jobs above are still running."
+                      ? "Nothing finished yet - the jobs above are still running."
                       : "No sources ingested yet."}
                 </p>
               ) : (
@@ -752,6 +779,7 @@ export function SourcesModal({
                       onRequestDelete={handleRequestDelete}
                       onConfirmDelete={handleConfirmDelete}
                       onCancelConfirm={() => setConfirming(null)}
+                      onExplain={handleExplain}
                     />
                   ))}
                 </div>

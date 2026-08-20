@@ -46,6 +46,68 @@ RRF_K = 60
 # putting "/no_think" in the prompt is ignored (see section 8 of .ai/instructions.md).
 ANSWER_THINKING_ENABLED = False
 
+# -- Context windows -----------------------------------------------------------
+# One window per model, applied to every call through config/models.py::get_num_ctx.
+#
+# These are not optional tuning knobs. Omit `num_ctx` and Ollama applies its own
+# default of **4096** (measured 2026-08-17 via `ollama ps`, not qwen3's native
+# 40,960) and then truncates anything longer *silently*. Five reranked chunks is
+# already ~3,850 tokens before the system prompt, the history and the answer, so the
+# ordinary query path was losing retrieved context with nothing reporting it.
+#
+# Why these values and not the model maximums. Ollama on this 24GB M3 reports
+# `system_limited=true` and gates loads on **free system RAM**, not the GPU - it was
+# observed evicting an 8.2 GiB load while 13.4 GiB of the 16 GiB Metal budget was
+# free, because only 3.9 GiB of system memory was. Measured `system_free` over a
+# working session ranged 3.3-10.5 GiB. Ollama's own predictions for qwen3:
+#
+#     num_ctx    qwen3    + bge-m3    + qwen2.5:3b (during ingestion)
+#       4,096    5.4 GiB    6.5 GiB     8.4 GiB
+#      24,576    8.2 GiB    9.3 GiB    12.7 GiB      <- chosen
+#      32,768    9.5 GiB   10.6 GiB    13.7 GiB
+#      40,960   10.5 GiB   11.6 GiB    14.7 GiB
+#
+# 40,960 would need 10.5 GiB free at load time - the very top of that range - which
+# brings back the pressure-eviction the residency work exists to avoid. 24,576 is 6x
+# the old effective window and is already proven to load here.
+NUM_CTX_STANDARD = 24576
+# qwen2.5:3b stays deliberately smaller than the answer model. Only the answer path
+# needed the larger window; nothing here justifies the extra eviction pressure during
+# ingestion, and that pressure was measured rather than assumed: at 24,576 this model
+# predicts 2.6 GiB against 1.9 at 4096, and loading it with 2.7 GiB of system memory
+# free evicted the query pair mid-graph-build.
+#
+# Not lower, though. The explain map step feeds it batches of EXPLAIN_BATCH_CHUNKS,
+# ~9,200 tokens, so Ollama's 4096 default would silently summarize a third of each
+# batch and the reduce step would explain a document it had mostly never seen.
+#
+# Known bound: /compact also runs on this model and can send more than this when a
+# conversation compacts at the top of HISTORY_TOKEN_BUDGET. See .ai/decisions.md.
+NUM_CTX_FAST = 16384
+# qwen2.5vl. Unchanged, and deliberately smaller: it already needs 7.3 GiB here, and
+# it is the one model that cannot coexist with the query pair regardless.
+NUM_CTX_VISION = 8192
+# bge-m3 has no entry on purpose - a BERT encoder has no generative KV cache, and a
+# 512-word chunk is ~700 tokens against a 4096 default. Nothing to size.
+
+# -- Explain in depth ----------------------------------------------------------
+# "Explain this source" deliberately skips retrieval: ranking exists to pick the few
+# chunks that answer a specific question, and this asks about the whole document. So
+# the size of a source, not its relevance, is the only limit that applies.
+#
+# The arithmetic, at CHUNK_SIZE = 512 words: one chunk is roughly 770 tokens. A typical
+# source here is ~13 chunks (~10k tokens) and fits whole; the largest measured is 155
+# chunks (~119k tokens). So one pass up to EXPLAIN_MAX_CHUNKS, and a map-reduce above it.
+#
+# 24 chunks is ~18.5k tokens, which leaves room inside NUM_CTX_STANDARD for the prompt
+# and the answer itself. These no longer carry their own num_ctx: explain runs in the
+# same window as every other answer, which is what keeps clicking Explain from tearing
+# down the warmed runner and reloading several GB.
+EXPLAIN_MAX_CHUNKS = 24
+# Batch size for the map step on oversized sources: ~9,200 tokens per batch, comfortably
+# inside NUM_CTX_FAST with room for the instructions and the summary it generates.
+EXPLAIN_BATCH_CHUNKS = 12
+
 # -- Ollama residency ----------------------------------------------------------
 # How long Ollama keeps a *query-critical* model resident. Ollama's 5-minute default
 # is shorter than the gap between launching the app and asking the first question, so
@@ -60,6 +122,20 @@ ANSWER_THINKING_ENABLED = False
 # _answer_stream). Ingestion-only models keep Ollama's default TTL - see
 # WARMUP_BACKGROUND_TASKS below for the slot arithmetic.
 OLLAMA_KEEP_ALIVE = "3h"
+
+# Socket timeout for every Ollama call, applied by the shared client in
+# utils/ollama_client.py. ollama-python's own default is `timeout=None`, i.e. wait
+# forever - which is exactly how a graph build froze mid-chunk and took the single
+# ingestion worker with it, since cancellation here is cooperative and a thread
+# blocked inside the read never gets to check it.
+#
+# httpx applies this per socket operation, not to the whole response, so on a
+# streamed call it bounds the *gap between tokens* rather than the total duration:
+# a long answer streams for as long as it likes, while a stalled stream raises.
+# Generous rather than tight because that same gap covers a cold multi-GB model
+# load before the first token - the value matches WARMUP_TASK_TIMEOUT_SECONDS,
+# which exists for the same reason.
+OLLAMA_TIMEOUT_SECONDS = 300
 
 # -- Startup warmup ------------------------------------------------------------
 # Models are loaded on startup so the first real request doesn't pay the cold
@@ -105,6 +181,15 @@ GRAPH_YIELD_MAX_SECONDS = 60.0
 # ahead or falls behind and shimmers - it never affects the build itself.
 GRAPH_SECONDS_PER_CHUNK = 8
 
+# Consecutive *transport* failures (timeouts, connection errors) that abort a graph
+# build. A per-call timeout alone is not enough: with Ollama wedged, a 155-chunk
+# source would spend 155 x OLLAMA_TIMEOUT_SECONDS - roughly 13 hours - failing one
+# chunk at a time while the single queue worker is held. Three in a row means the
+# model is not coming back, so fail the job and let the queue advance. Content
+# failures (a chunk whose JSON won't parse) do not count: those are per-chunk and
+# genuinely skippable.
+GRAPH_MAX_CONSECUTIVE_FAILURES = 3
+
 # -- Ingestion queue -----------------------------------------------------------
 # How long a finished row (done / cancelled / error) stays in the display queue before
 # get_status() drops it. Nothing else removes one: clear_completed() has no caller, and
@@ -114,7 +199,6 @@ QUEUE_TERMINAL_ROW_TTL_SECONDS = 60
 
 # -- Ingestion -----------------------------------------------------------------
 VISION_TIMEOUT_SECONDS = 180
-OLLAMA_VISION_NUM_CTX = 8192
 HANDWRITTEN_IMAGE_THRESHOLD = 5
 HANDWRITTEN_TEXT_THRESHOLD = 200
 # Docling renders embedded PDF images at 72 DPI x this scale. Its default of 1.0 is

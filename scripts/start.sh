@@ -1,7 +1,7 @@
 #!/bin/bash
 # Start RAGbase: update check, backend, frontend, browser.
 # For a tight dev loop, skip this and run the two processes directly (see §11 of
-# .ai/instructions.md) — this script pulls from git and does a production build.
+# .ai/instructions.md) - this script pulls from git and does a production build.
 cd "$(dirname "$0")/.."
 
 echo "=== Starting RAGbase ==="
@@ -9,7 +9,7 @@ echo "=== Starting RAGbase ==="
 # 0. Clear ports before starting.
 #    SIGTERM first, then SIGKILL only for whatever ignored it. A leftover backend
 #    from a previous session has a shutdown hook that unloads its models from
-#    Ollama, and `kill -9` skips it — so the old instance's several GB stayed
+#    Ollama, and `kill -9` skips it - so the old instance's several GB stayed
 #    pinned on the GPU while the new one warmed its own copies alongside them.
 clear_port() {
     local port="$1"
@@ -20,7 +20,7 @@ clear_port() {
     echo "Port $port in use, stopping (PIDs: $(echo "$pids" | tr '\n' ' '))"
     echo "$pids" | xargs kill 2>/dev/null || true
 
-    # Bounded wait — a graceful stop must never hang the launch.
+    # Bounded wait - a graceful stop must never hang the launch.
     for _ in $(seq 1 20); do
         pids=$(lsof -ti ":$port" 2>/dev/null) || true
         [ -z "$pids" ] && return 0
@@ -62,7 +62,7 @@ BACKEND_PID=$!
 echo "Backend started (PID $BACKEND_PID)"
 
 # Registered immediately after the first process exists, not at the end of the
-# script — the build and the readiness wait below can take minutes, and a Ctrl+C
+# script - the build and the readiness wait below can take minutes, and a Ctrl+C
 # in that window used to leave the backend running.
 cleanup() {
     echo ""
@@ -76,7 +76,7 @@ cleanup() {
     # Wait for the backend's shutdown hook to unload its models from Ollama
     # before returning the prompt. Without this the script exited immediately and
     # the shell looked idle while several GB were still being released. Bounded,
-    # because a wedged unload must not hold the terminal hostage — the finite
+    # because a wedged unload must not hold the terminal hostage - the finite
     # OLLAMA_KEEP_ALIVE is the backstop if we give up here.
     for _ in $(seq 1 20); do
         kill -0 "$BACKEND_PID" 2>/dev/null || break
@@ -87,12 +87,12 @@ cleanup() {
     exit 0
 }
 # HUP included: closing the terminal window or tab sends SIGHUP, and uvicorn
-# handles only INT/TERM — so without this the default action killed it outright
+# handles only INT/TERM - so without this the default action killed it outright
 # and the shutdown hook never ran, leaving the models pinned for the full TTL.
 trap cleanup INT TERM HUP
 
 # 4. Build frontend if changed, then start.
-#    md5 on macOS, md5sum on Linux — install.sh supports both.
+#    md5 on macOS, md5sum on Linux - install.sh supports both.
 hash_files() {
     if command -v md5sum > /dev/null 2>&1; then
         md5sum | awk '{print $1}'
@@ -102,7 +102,7 @@ hash_files() {
 }
 
 # Every directory holding frontend source, plus the config files that change build
-# output. Miss one and a real change ships against a stale production build —
+# output. Miss one and a real change ships against a stale production build -
 # frontend/types was the gap that motivated listing these explicitly.
 FRONTEND_HASH=$(
     {

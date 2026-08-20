@@ -46,6 +46,10 @@ const STAGE_LABELS: Record<string, string> = {
   reranking: "Reranking chunks…",
   generating: "Generating answer…",
   processing_attachments: "Processing attachments…",
+  loading_source: "Reading the document…",
+  // Only sent for a source too large to explain in one pass, so it doubles as the
+  // signal that this is going to take a while.
+  summarizing_source: "Summarizing the document section by section…",
   stopped: "Stopped.",
 };
 
@@ -320,7 +324,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
                   <button
                     key={group.source}
                     onClick={() => setOpenSource(group.source)}
-                    title={`${group.source} — ${group.chunks.length} chunk${group.chunks.length !== 1 ? "s" : ""}`}
+                    title={`${group.source} - ${group.chunks.length} chunk${group.chunks.length !== 1 ? "s" : ""}`}
                     className="inline-flex max-w-[220px] items-center gap-1.5 rounded-full border border-border bg-surface px-2.5 py-0.5 text-[11px] text-foreground-muted hover:border-foreground-muted/40 hover:text-foreground transition-colors"
                   >
                     <span className="truncate">{group.label}</span>

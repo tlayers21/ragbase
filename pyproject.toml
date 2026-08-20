@@ -18,7 +18,7 @@ dependencies = [
     "pdf2image>=1.16.0",
     "pillow>=10.0.0",
     # Primary extractor for office formats and typed PDFs (ingestion/office.py,
-    # ingestion/pdf.py). Pure Rust wheel — no ML models, no system dependencies,
+    # ingestion/pdf.py). Pure Rust wheel - no ML models, no system dependencies,
     # nothing to add to scripts/install.sh.
     "firecrawl-anydoc>=0.1.9",
     # Fallback extractor for PDFs anydoc declines: oversized files and unexpected
@@ -26,7 +26,7 @@ dependencies = [
     "docling>=2.0.0",
     # Pinned explicitly in ingestion/pdf.py via RapidOcrOptions. Docling's default
     # ocr_options.kind is "auto", which silently resolves to whichever engine is
-    # installed — declaring this keeps typed-PDF OCR reproducible.
+    # installed - declaring this keeps typed-PDF OCR reproducible.
     "rapidocr>=3.0.0",
     "openai-whisper>=20230918",
     "yt-dlp>=2023.0.0",
@@ -54,7 +54,7 @@ asyncio_mode = "auto"
 # Puts the repo root on sys.path so `import config`/`import ingestion` resolve under a
 # plain `pytest`. Without it only `tests/` lands on the path (there is no tests/__init__.py),
 # and collection dies with ModuleNotFoundError. Do not rely on the editable install for
-# this — it is a side effect of how the venv happens to be built, not a guarantee.
+# this - it is a side effect of how the venv happens to be built, not a guarantee.
 pythonpath = ["."]
 # Integration tests need a live Ollama and a warm backend, so a bare `pytest` stays
 # fast and offline. Run them with `pytest -m integration`.

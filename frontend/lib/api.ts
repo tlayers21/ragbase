@@ -337,6 +337,25 @@ export async function streamDirectQuery(
   await consumeQueryStream(res, handlers, signal);
 }
 
+/**
+ * Explain one source in depth. No question, no history and no source_filter:
+ * the server uses every chunk of `source` in document order and does no ranking,
+ * so the only thing it needs is the name.
+ */
+export async function streamExplainSource(
+  source: string,
+  handlers: StreamQueryHandlers,
+  signal?: AbortSignal
+): Promise<void> {
+  const res = await fetch(`${getBaseUrl()}/query/explain`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source }),
+    signal,
+  });
+  await consumeQueryStream(res, handlers, signal);
+}
+
 export interface AttachmentPayload {
   type: AttachmentType;
   name: string;

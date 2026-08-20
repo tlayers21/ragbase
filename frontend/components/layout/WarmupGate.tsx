@@ -144,7 +144,7 @@ export function WarmupGate({ status, stalled, ready }: WarmupGateProps) {
               if the API URL needs changing.
             </>
           ) : (
-            "Chat and uploads open automatically — running them now would queue behind the models and stall."
+            "Chat and uploads open automatically - running them now would queue behind the models and stall."
           )}
         </p>
       </div>

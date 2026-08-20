@@ -5,10 +5,10 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 
+from api.guards import require_finished
 from config.logging import setup_logging
 from config.paths import SOURCES_DIR
 from config.runtime import USER_ID
-from ingestion.queue import find_active_job
 
 logger = setup_logging(__name__)
 router = APIRouter(prefix="/sources", tags=["sources"])
@@ -58,12 +58,7 @@ async def get_source_file(source: str, request: Request):
     # *before* the job is enqueued, so it is servable from the moment the upload
     # lands - which meant a source could be previewed while the app considered it
     # unfinished and hid it everywhere else. 409, not 404: the file is there.
-    job = await asyncio.to_thread(find_active_job, source, USER_ID)
-    if job:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Source '{source}' is still being ingested ({job.get('status')})",
-        )
+    await require_finished(source)
 
     located = await asyncio.to_thread(_locate_source_file, source)
     if located is None:

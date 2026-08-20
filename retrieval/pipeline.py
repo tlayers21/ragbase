@@ -67,7 +67,7 @@ class TranscriptionRefinement(dspy.Signature):
 
     Keep only mathematical notation, symbols, and short labels as literally
     written. Remove all full sentences that describe, explain, or narrate
-    what the math means or does — even if they sound like part of the notes.
+    what the math means or does - even if they sound like part of the notes.
     Preserve LaTeX exactly. Do not add new content.
     """
 
@@ -337,6 +337,36 @@ def build_direct_prompt(question: str, history_str: str) -> str:
     if not history_str:
         return question
     return f"Conversation history:\n{history_str}\n\nQuestion: {question}"
+
+
+def build_explain_prompt(source: str, context: str, partial: bool = False) -> str:
+    """
+    Construct the prompt for explaining one whole source in depth.
+
+    Unlike build_answer_prompt, the instruction here is fixed and the "context" is
+    the entire document rather than a handful of ranked excerpts - so this prompt
+    asks for a structured account of the material instead of an answer to
+    something. It also drops the "never narrate where information came from" rule,
+    which exists to stop citation-speak leaking into an answer: here the document
+    *is* the subject, and referring to it is correct.
+
+    `partial` is set on the reduce step, where `context` holds batch summaries
+    rather than raw chunks - the model is told so it does not describe the
+    summaries as though they were the document's own words.
+    """
+    material = (
+        "section summaries of a document, in order" if partial else "the full text of a document"
+    )
+    return (
+        f"Below is {material} titled '{source}'.\n\n"
+        "Explain this document in depth. Cover what it is about, the key ideas and "
+        "how they connect, any important details, definitions or results, and the "
+        "conclusions it reaches. Organise the explanation with markdown headings and "
+        "follow the document's own structure. Be specific and concrete - prefer the "
+        "document's actual content over general statements about the topic. Do not "
+        "invent material that is not present.\n\n"
+        f"Document:\n{context}\n\nExplanation:"
+    )
 
 
 def configure_dspy(ollama_url: str, model: str) -> None:

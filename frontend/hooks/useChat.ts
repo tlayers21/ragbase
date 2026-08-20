@@ -6,22 +6,29 @@ import {
   streamQuery,
   streamDirectQuery,
   streamAttachmentQuery,
+  streamExplainSource,
   generateChatTitle,
   fetchResetToken,
   compactMessages,
   type AttachmentPayload,
 } from "@/lib/api";
-import { HEALTH_POLL_INTERVAL_MS } from "@/lib/config";
+import { HEALTH_POLL_INTERVAL_MS, HISTORY_TOKEN_BUDGET } from "@/lib/config";
 import type { ChatSession, CitedChunk, Message, MessageAttachment, PendingAttachment, QueryMode } from "@/types";
 
-const TOKEN_LIMIT = 40960;
 const COMPACT_THRESHOLD = 0.9;
-const RAG_TOKENS_PER_EXCHANGE = 1500;
 
+// Tokens the *conversation history* occupies - nothing else. Retrieved context is
+// not counted here because it is not accumulated: the backend sends only the
+// current turn's chunks and formats prior turns from their message text alone.
+// HISTORY_TOKEN_BUDGET already holds a reserve back for that one turn.
+//
+// This used to add 1500 tokens per exchange as a stand-in for RAG context, which
+// grew with the conversation for context that was never resent. Harmless against
+// the old 40,960 ceiling; against the real window it would have compacted a
+// ten-exchange chat on 15k of allowance alone.
 function estimateTokens(messages: Message[]): number {
   const textChars = messages.reduce((sum, m) => sum + m.role.length + m.content.length, 0);
-  const exchangeCount = Math.ceil(messages.length / 2);
-  return Math.floor(textChars / 4) + exchangeCount * RAG_TOKENS_PER_EXCHANGE;
+  return Math.floor(textChars / 4);
 }
 
 // Folds a past message's attachment descriptions into its history content so
@@ -175,7 +182,12 @@ export function useChat() {
       content: string,
       sourceFilter: string[] | null = null,
       isDirect: boolean = false,
-      attachments: PendingAttachment[] = []
+      attachments: PendingAttachment[] = [],
+      // Set by explainSource() below. When present the request goes to
+      // /query/explain and carries only this name - `content` is still the text
+      // shown in the user's bubble, but the server never sees it, because there
+      // is no question to answer.
+      explainSourceName?: string
     ) => {
       if (isLoadingRef.current) {
         // A previous stream is still open - abort it and give the fetch a
@@ -209,7 +221,7 @@ export function useChat() {
       if (
         sessionForCompact &&
         sessionForCompact.messages.length > 10 &&
-        estimateTokens(sessionForCompact.messages) >= TOKEN_LIMIT * COMPACT_THRESHOLD
+        estimateTokens(sessionForCompact.messages) >= HISTORY_TOKEN_BUDGET * COMPACT_THRESHOLD
       ) {
         const toCompact = sessionForCompact.messages.slice(0, -10);
         const kept = sessionForCompact.messages.slice(-10);
@@ -445,7 +457,9 @@ export function useChat() {
       };
 
       try {
-        if (attachments.length > 0) {
+        if (explainSourceName) {
+          await streamExplainSource(explainSourceName, handlers, controller.signal);
+        } else if (attachments.length > 0) {
           await streamAttachmentQuery(
             content,
             history,
@@ -505,6 +519,24 @@ export function useChat() {
     [activeSessionId, sessions]
   );
 
+  /**
+   * Ask for a whole-source explanation, as though the user had typed it.
+   *
+   * Goes through sendMessage rather than duplicating it: session creation,
+   * compaction, the user/assistant message pair, title generation, abort
+   * handling and the latency measurement are all identical here, and only the
+   * endpoint differs.
+   *
+   * The first argument is only ever displayed - /query/explain takes `{source}`
+   * and nothing else. The `[source]` filter is likewise not sent; it records
+   * that this turn is scoped to one document, which is what the message's own
+   * mode badge reads.
+   */
+  const explainSource = useCallback(
+    (source: string) => sendMessage(`Explain "${source}" in depth`, [source], false, [], source),
+    [sendMessage]
+  );
+
   const deleteSession = useCallback((id: string) => {
     setSessions((prev) => {
       const next = prev.filter((s) => s.id !== id);
@@ -530,6 +562,7 @@ export function useChat() {
     newSession,
     selectSession,
     sendMessage,
+    explainSource,
     stopGeneration,
     renameSession,
     pinSession,

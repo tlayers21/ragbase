@@ -5,13 +5,14 @@ from pydantic import BaseModel
 
 from analysis.contradiction import find_contradictions
 from analysis.fact_check import check_source_facts
+from api.guards import require_finished
 from config.logging import setup_logging
 from config.paths import SOURCES_DIR
 from config.runtime import USER_ID
 from config.settings import SOURCE_PREVIEW_CHARS
 from ingestion.helpers import delete_source
 from ingestion.queue import active_sources, cancel_job, find_active_job
-from utils.chromadb_client import get_collection
+from utils.chromadb_client import get_collection, get_source_chunks
 
 logger = setup_logging(__name__)
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -55,23 +56,6 @@ def _stored_extensions() -> dict[str, str]:
     if not source_dir.exists():
         return {}
     return {path.stem: path.suffix for path in source_dir.iterdir() if path.is_file()}
-
-
-async def _require_finished(source: str) -> None:
-    """409 if `source` still has a job in flight.
-
-    409 rather than 404 on purpose: the source exists, it is just not finished,
-    and the two need different handling on the client. The queue status file is
-    the authority on "finished" - chunks and the summary are physically in
-    ChromaDB minutes before the graph build that completes the job, so the
-    presence of data proves nothing.
-    """
-    job = await asyncio.to_thread(find_active_job, source, USER_ID)
-    if job:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Source '{source}' is still being ingested ({job.get('status')})",
-        )
 
 
 @router.get("/", response_model=list[SourceSummary])
@@ -154,19 +138,12 @@ async def get_document(source: str):
     this, a request landing mid-job returned whatever had been stored so far as
     though it were the whole document.
     """
-    await _require_finished(source)
+    await require_finished(source)
 
-    collection = get_collection(USER_ID)
-    results = await asyncio.to_thread(
-        lambda: collection.get(where={"source": source}, include=["documents", "metadatas"])
-    )
+    chunks = await asyncio.to_thread(get_source_chunks, source, USER_ID)
 
-    if not results["ids"]:
+    if not chunks:
         raise HTTPException(status_code=404, detail=f"Source '{source}' not found")
-
-    chunks = sorted(
-        zip(results["documents"], results["metadatas"]), key=lambda x: x[1].get("chunk_index", 0)
-    )
 
     return [
         ChunkDetail(
@@ -216,7 +193,7 @@ async def check_facts(source: str):
     # Gated: checking a source mid-extraction would grade a fraction of the
     # document and write `flagged` metadata onto chunks the job may still delete
     # (a failed or cancelled build discards everything).
-    await _require_finished(source)
+    await require_finished(source)
 
     # One LLM call per chunk - minutes on a large source, and it would block the
     # event loop for all of it (no query could even start streaming).
@@ -232,7 +209,7 @@ async def check_contradictions(source: str):
     # compares *across* sources and writes metadata onto both sides of a
     # contradiction, so an unfinished source on either side leaves flags pointing
     # at a document that may not survive its own job.
-    await _require_finished(source)
+    await require_finished(source)
 
     # Same reasoning as check_facts: LLM calls plus ChromaDB reads, all synchronous.
     count = await asyncio.to_thread(find_contradictions, source, USER_ID)

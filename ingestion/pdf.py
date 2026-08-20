@@ -316,11 +316,11 @@ class PdfIngestor(BaseIngestor):
         prompt = (
             "Transcribe the handwritten content on this page verbatim, line by line, "
             "exactly as it appears. Do not paraphrase, summarize, explain, or reason "
-            "about the math — write down only what is literally written on the page, "
+            "about the math - write down only what is literally written on the page, "
             "in the same order it appears. Write mathematical expressions in LaTeX "
             "notation, matching the page as closely as possible. Do not add any notes, "
             "commentary, or statements about the transcription itself. If a word or "
-            "symbol is genuinely illegible, write [illegible] in its place — do not "
+            "symbol is genuinely illegible, write [illegible] in its place - do not "
             "guess or substitute a plausible-looking alternative."
         )
         return vision_with_timeout(image_path, prompt, task="vision_handwrite", timeout=timeout)

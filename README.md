@@ -7,8 +7,8 @@
 
 ## What it does
 
-RAGbase ingests your documents — notes, PDFs (typed or handwritten), images,
-videos, and YouTube links — and lets you chat with all of them at once. Answers
+RAGbase ingests your documents - notes, PDFs (typed or handwritten), images,
+videos, and YouTube links - and lets you chat with all of them at once. Answers
 are grounded in your own content with source citations, so you can see exactly
 where every claim came from. Everything runs locally through Ollama: your
 documents and questions never leave your machine.
@@ -20,19 +20,20 @@ documents and questions never leave your machine.
 - Hybrid BM25 + vector search with cross-encoder reranking
 - Knowledge graph for cross-document concept linking
 - Streaming answers with source citations
+- "Explain in depth" - a whole-document walkthrough of any source, on demand
 - Multi-turn chat with context window management
-- Clipboard paste — images and long text automatically become attachments
+- Clipboard paste - images and long text automatically become attachments
 - Dark/light mode, PDF preview, drag-and-drop ingestion
 
 ## Requirements
 
 - Mac (Apple Silicon recommended) or Linux
 - Windows via WSL2 should work but is untested
-- **[Ollama](https://ollama.ai/download)** — local model inference engine
-- **Python 3.13+** — [python.org](https://www.python.org/downloads/)
-- **Node.js 18+** — [nodejs.org](https://nodejs.org/)
-- **ffmpeg** — decodes audio for video and YouTube ingestion
-- **poppler** — rasterises pages for scanned and handwritten PDFs
+- **[Ollama](https://ollama.ai/download)** - local model inference engine
+- **Python 3.13+** - [python.org](https://www.python.org/downloads/)
+- **Node.js 18+** - [nodejs.org](https://nodejs.org/)
+- **ffmpeg** - decodes audio for video and YouTube ingestion
+- **poppler** - rasterises pages for scanned and handwritten PDFs
 
 `install.sh` checks for all of these and stops if any is missing. For the last two:
 
@@ -92,7 +93,7 @@ bash scripts/install.sh
 - Set up the Python virtual environment and install dependencies
 - Install frontend dependencies and build the production frontend
 
-This takes 20-40 minutes on first run depending on your internet speed — mostly
+This takes 20-40 minutes on first run depending on your internet speed - mostly
 waiting for model downloads.
 
 ### 5. Start RAGbase
@@ -105,7 +106,7 @@ This starts the backend and frontend, then opens your browser to `localhost:3000
 On subsequent runs `start.sh` checks for updates automatically and only rebuilds
 the frontend if something changed, so the *scripts* return fast. The app itself
 still shows a loading screen for 15-20 seconds on every launch while it loads
-models into memory — this is normal, not a hang.
+models into memory - this is normal, not a hang.
 
 ## Updating
 
@@ -119,9 +120,9 @@ bash scripts/start.sh
 ## How it works
 
 A FastAPI backend orchestrates ingestion and retrieval. Documents are chunked
-and embedded into ChromaDB (embedded, in-process — no server to run), a SQLite
+and embedded into ChromaDB (embedded, in-process - no server to run), a SQLite
 knowledge graph links concepts across documents, and a Next.js frontend
-provides the chat UI. All AI — generation, embeddings, vision, reranking —
+provides the chat UI. All AI - generation, embeddings, vision, reranking -
 runs locally through Ollama. No Docker, no internet required after setup.
 
 ## Model stack
@@ -130,19 +131,19 @@ runs locally through Ollama. No Docker, no internet required after setup.
 |------|-------|
 | Answer generation | qwen3 (8B) |
 | Summarize, entity extraction, text cleanup | qwen2.5:3b |
-| Vision — handwriting, diagrams, images | qwen2.5vl |
+| Vision - handwriting, diagrams, images | qwen2.5vl |
 | Embeddings | bge-m3 |
 | Reranking | BAAI/bge-reranker-v2-m3 |
 | Audio transcription | Whisper base |
 | OCR (standalone images) | PaddleOCR |
 | OCR (typed PDFs) | RapidOCR via Docling |
 
-**Total model footprint: ~17GB** — ~14GB of Ollama models pulled by `install.sh`, plus
+**Total model footprint: ~17GB** - ~14GB of Ollama models pulled by `install.sh`, plus
 the reranker (~2GB) and Whisper (~150MB), which download on first use.
 
 ## Hardware
 
-Apple Silicon (M1/M2/M3/M4) is strongly recommended — all models run on the
+Apple Silicon (M1/M2/M3/M4) is strongly recommended - all models run on the
 MPS GPU which is significantly faster than CPU. Intel Mac and Linux with an
 Nvidia GPU also work well. CPU-only will work but responses will be slow
 (30-120 seconds per query depending on hardware).
@@ -153,7 +154,7 @@ Minimum recommended: 16GB RAM. 24GB+ for comfortable use with all models loaded.
 
 RAGbase sends anonymous usage telemetry by default: query latency, source
 counts, and a random device ID (e.g. `dev_a3f9b2c1`) that cannot be linked to
-you. Your queries, documents, and personal data are **never** sent — they never
+you. Your queries, documents, and personal data are **never** sent - they never
 leave your machine. You can disable telemetry entirely with the toggle in
 **Settings -> Send anonymous usage telemetry**.
 
@@ -180,7 +181,7 @@ ragbase/
 ├── ml/            Eval and fine-tuning scripts
 ├── utils/         ChromaDB client, Ollama client, cache, telemetry
 ├── frontend/      Next.js app (TypeScript, Tailwind)
-├── scripts/       install.sh, start.sh, reset_all.sh, status.sh
+├── scripts/       install.sh, start.sh, reset_all.sh, status.sh, metrics.py
 └── data/          Local data: ChromaDB, cache, source files (gitignored)
 ```
 

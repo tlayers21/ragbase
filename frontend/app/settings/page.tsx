@@ -57,7 +57,7 @@ export default function SettingsPage() {
             Display name
           </label>
           <p className="text-xs text-foreground-muted mb-3">
-            Optional. Used for a friendly greeting — never sent anywhere.
+            Optional. Used for a friendly greeting - never sent anywhere.
           </p>
           <input
             type="text"
@@ -153,11 +153,11 @@ export default function SettingsPage() {
             <span className="font-medium text-foreground-muted">
               Recommended: {DEFAULT_RELEVANCE_PERCENT}%
             </span>{" "}
-            — a deliberately conservative floor, so low-confidence chunks are never fed to
+            - a deliberately conservative floor, so low-confidence chunks are never fed to
             the model. Much lower and it cited passages the reranker scored at a fraction of
             a percent; at the model’s own boundary (56%) too many questions fell through to
             answering with no citations at all. Raise it to cite only strong matches; 0%
-            passes through everything retrieval returned. Applies to your next question — no
+            passes through everything retrieval returned. Applies to your next question - no
             restart needed.
           </p>
         </div>

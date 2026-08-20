@@ -5,10 +5,34 @@ from pathlib import Path
 import ollama
 
 from config.logging import setup_logging
-from config.models import get_model
-from config.settings import OLLAMA_KEEP_ALIVE, OLLAMA_VISION_NUM_CTX
+from config.models import get_model, get_num_ctx
+from config.settings import OLLAMA_KEEP_ALIVE, OLLAMA_TIMEOUT_SECONDS
 
 logger = setup_logging(__name__)
+
+# Every Ollama call in the app goes through this client, never the module-level
+# `ollama.chat` / `ollama.embed` helpers. Those use ollama-python's own default
+# client, which is built with `timeout=None` - an unbounded read that turns a
+# wedged Ollama into a permanently blocked caller. On the ingestion worker that
+# meant a hung graph build stalled the entire queue with no error and no recovery,
+# because nothing else in this codebase can interrupt a blocked socket read.
+#
+# Reach for this rather than adding an import of `ollama` elsewhere; a bare
+# `ollama.chat(...)` anywhere in the app silently opts back out of the timeout.
+client = ollama.Client(timeout=OLLAMA_TIMEOUT_SECONDS)
+
+
+def ctx_options(model: str) -> dict | None:
+    """Ollama options carrying this model's context window, or None if it has none.
+
+    Every generation call in the app goes through this - generate_stream, vision,
+    warm and unload alike - so a model is always loaded at one window. That is the
+    point: a runner is configured for a single num_ctx, and asking for a different
+    one tears it down and reloads several GB. Warming at one size and querying at
+    another is the specific way this goes wrong quietly.
+    """
+    num_ctx = get_num_ctx(model)
+    return {"num_ctx": num_ctx} if num_ctx else None
 
 
 # -- Response shape handling -------------------------------------------------
@@ -71,7 +95,7 @@ def _extract_batch_embeddings(response) -> list[list[float]]:
 def embed(text: str) -> list[float]:
     """Embed text using the embedding model."""
     model = get_model("embed")
-    response = ollama.embed(model=model, input=text, keep_alive=OLLAMA_KEEP_ALIVE)
+    response = client.embed(model=model, input=text, keep_alive=OLLAMA_KEEP_ALIVE)
     return _extract_single_embedding(response)
 
 
@@ -89,7 +113,7 @@ def embed_batch(texts: list[str]) -> list[list[float]]:
 
     # Try one-shot batch call
     try:
-        response = ollama.embed(model=model, input=texts, keep_alive=OLLAMA_KEEP_ALIVE)
+        response = client.embed(model=model, input=texts, keep_alive=OLLAMA_KEEP_ALIVE)
         embeddings = _extract_batch_embeddings(response)
         if len(embeddings) == len(texts):
             return embeddings
@@ -101,7 +125,7 @@ def embed_batch(texts: list[str]) -> list[list[float]]:
 
     def _single(i, txt):
         try:
-            response = ollama.embed(model=model, input=txt, keep_alive=OLLAMA_KEEP_ALIVE)
+            response = client.embed(model=model, input=txt, keep_alive=OLLAMA_KEEP_ALIVE)
             return _extract_single_embedding(response)
         except Exception as e:
             logger.error(f"embed_batch: single embed failed for idx={i}: {e}")
@@ -134,12 +158,18 @@ def warm(task: str, keep_alive: float | str = OLLAMA_KEEP_ALIVE) -> None:
     caller is now a WARMUP_CRITICAL_TASKS entry: warming a model under Ollama's
     5-minute default just means it has expired again before the user's first
     question, which is the whole failure this was meant to prevent.
+
+    **It must warm at the same num_ctx the real calls request.** A runner is loaded
+    for one window; ask for a different one and Ollama tears it down and reloads
+    several GB - so warming at Ollama's default and then querying at
+    NUM_CTX_STANDARD would leave the first question paying the cold load twice
+    over, which is precisely the bug warmup exists to prevent.
     """
     model = get_model(task)
     if task == "embed":
-        ollama.embed(model=model, input="warmup", keep_alive=keep_alive)
+        client.embed(model=model, input="warmup", keep_alive=keep_alive)
     else:
-        ollama.generate(model=model, prompt="hi", keep_alive=keep_alive)
+        client.generate(model=model, prompt="hi", keep_alive=keep_alive, options=ctx_options(model))
 
 
 def unload(task: str) -> None:
@@ -158,9 +188,11 @@ def unload(task: str) -> None:
     """
     model = get_model(task)
     if task == "embed":
-        ollama.embed(model=model, input="", keep_alive=0)
+        client.embed(model=model, input="", keep_alive=0)
     else:
-        ollama.generate(model=model, prompt="", keep_alive=0)
+        # Same window as warm()/generate_stream, so this addresses the runner that
+        # is actually loaded rather than asking for a differently-configured one.
+        client.generate(model=model, prompt="", keep_alive=0, options=ctx_options(model))
 
 
 def restore_query_models() -> None:
@@ -223,10 +255,10 @@ def vision(image_path: str | Path, prompt: str, task: str = "vision_handwrite") 
     logger.debug(f"vision | task={task} model={model}")
     with open(image_path, "rb") as f:
         image_data = base64.b64encode(f.read()).decode("utf-8")
-    response = ollama.chat(
+    response = client.chat(
         model=model,
         messages=[{"role": "user", "content": prompt, "images": [image_data]}],
-        options={"num_ctx": OLLAMA_VISION_NUM_CTX},
+        options=ctx_options(model),
     )
     return response["message"]["content"]
 
@@ -237,6 +269,7 @@ def generate_stream(
     model: str | None = None,
     think: bool | None = None,
     keep_alive: float | str | None = None,
+    options: dict | None = None,
 ):
     """
     Stream output tokens for UI responses.
@@ -254,6 +287,13 @@ def generate_stream(
     resident competes for the last one. Leaving them on Ollama's 5-minute default
     means they release it on their own. `api/query.py::_answer_stream` passes
     OLLAMA_KEEP_ALIVE because the answer model *is* query-critical.
+
+    `options` is Ollama's generation-parameter dict, forwarded untouched. The only
+    caller that needs it today is the explain endpoint, which must set `num_ctx`
+    explicitly: with the key absent Ollama applies its own default window and
+    silently truncates a long prompt, so a whole-document explanation would be
+    built from a document the model never fully saw. `vision()` sets it the same
+    way for the same reason.
     """
     model = model or get_model("answer")
     messages = []
@@ -267,5 +307,10 @@ def generate_stream(
     kwargs = {} if think is None else {"think": think}
     if keep_alive is not None:
         kwargs["keep_alive"] = keep_alive
-    for chunk in ollama.chat(model=model, messages=messages, stream=True, **kwargs):
+    # Defaulted, not required: every caller gets its model's window without asking,
+    # so a new call site cannot silently inherit Ollama's 4096 and truncate.
+    resolved_options = options if options is not None else ctx_options(model)
+    if resolved_options:
+        kwargs["options"] = resolved_options
+    for chunk in client.chat(model=model, messages=messages, stream=True, **kwargs):
         yield chunk["message"]["content"]

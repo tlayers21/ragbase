@@ -4,7 +4,7 @@ from config.models import get_model
 from ingestion.queue import active_sources
 from retrieval.embed import embed
 from retrieval.search import _build_filter
-from utils.chromadb_client import get_collection
+from utils.chromadb_client import get_collection, get_source_chunks
 from utils.ollama_client import generate_stream
 
 logger = setup_logging(__name__)
@@ -47,15 +47,18 @@ def find_contradictions(source: str, user_id: str) -> int:
     from other sources. Flags both sides when a contradiction is found.
     Returns the number of contradictions found.
     """
-    collection = get_collection(user_id)
+    # Document order rather than Chroma's arbitrary order. It does not change which
+    # contradictions are found - every chunk is compared either way - but it makes
+    # the progress logging follow the document instead of jumping around it.
+    chunks = get_source_chunks(source, user_id)
 
-    results = collection.get(where={"source": source}, include=["documents", "metadatas"])
-
-    if not results["ids"]:
+    if not chunks:
         logger.warning(f"No chunks found for source '{source}'")
         return 0
 
-    chunks = list(zip(results["documents"], results["metadatas"]))
+    # Still needed below: each chunk is queried against every *other* source's chunks.
+    collection = get_collection(user_id)
+
     contradiction_count = 0
 
     for doc, meta in chunks:

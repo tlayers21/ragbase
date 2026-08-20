@@ -57,7 +57,7 @@ export function ModelSelector() {
               <div className="px-3 py-2">
                 <div className="flex items-start justify-between gap-2">
                   <p className="text-xs text-foreground-muted leading-snug">
-                    Coming soon — API key support for Claude, GPT-4, and more is on the way.
+                    Coming soon - API key support for Claude, GPT-4, and more is on the way.
                   </p>
                   <button
                     onClick={() => setShowComingSoon(false)}

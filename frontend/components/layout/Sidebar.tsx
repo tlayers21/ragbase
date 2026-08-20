@@ -16,9 +16,8 @@ import {
 import { cn } from "@/lib/utils";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useSettings } from "@/hooks/useSettings";
+import { HISTORY_TOKEN_BUDGET } from "@/lib/config";
 import type { ChatSession } from "@/types";
-
-const TOKEN_LIMIT = 40960;
 
 function formatK(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
@@ -277,7 +276,7 @@ export function Sidebar({
           <p className="px-2 pb-1 text-xs text-foreground-muted/70">Hey, {displayName}</p>
         )}
         {estimatedTokens > 0 && (() => {
-          const pct = estimatedTokens / TOKEN_LIMIT;
+          const pct = estimatedTokens / HISTORY_TOKEN_BUDGET;
           const barColor =
             pct >= 0.9 ? "bg-red-500" : pct >= 0.75 ? "bg-amber-500" : "bg-green-500";
           return (
@@ -285,7 +284,7 @@ export function Sidebar({
               <div className="flex items-center justify-between mb-1">
                 <span className="text-[10px] text-foreground-muted/60">Context</span>
                 <span className="text-[10px] tabular-nums text-foreground-muted/60">
-                  {formatK(estimatedTokens)} / 40k
+                  {formatK(estimatedTokens)} / {formatK(HISTORY_TOKEN_BUDGET)}
                 </span>
               </div>
               <div className="h-1 w-full rounded-full bg-border overflow-hidden">
