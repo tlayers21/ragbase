@@ -215,7 +215,7 @@ def restore_query_models() -> None:
                               -> [bge-m3, qwen2.5:3b, qwen2.5vl]
 
     Both query models were evicted at the *second* step, when qwen2.5vl alone was
-    loading. qwen2.5vl needs 7.3GB at OLLAMA_VISION_NUM_CTX and simply does not
+    loading. qwen2.5vl needs 7.3GB at NUM_CTX_VISION and simply does not
     fit beside qwen3 in Ollama's Metal budget on 24GB, so it displaces whatever
     is resident no matter what order the calls are made in. Ordering cannot fix
     a capacity problem, and `keep_alive` never protected against eviction under
