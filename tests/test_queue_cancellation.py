@@ -151,10 +151,11 @@ def test_active_sources_holds_a_cancelled_source_the_worker_still_owns(
 
 
 def test_get_status_expires_terminal_rows_past_the_ttl(tmp_queue_status, write_jobs):
-    """Terminal rows self-clear, because nothing else removes them.
+    """Terminal rows self-clear, because nothing else reliably removes them.
 
-    clear_completed() has no caller and restart recovery only rewrites active rows, so
-    without this sweep a cancelled job stayed pinned in the UI queue forever.
+    clear_completed() is only reachable from POST /ingest/clear_completed, which no
+    client calls, and restart recovery rewrites active rows only - so without this
+    sweep a cancelled job stayed pinned in the UI queue forever.
     """
     stale = time.time() - QUEUE_TERMINAL_ROW_TTL_SECONDS - 1
     write_jobs(

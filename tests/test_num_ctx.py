@@ -108,3 +108,38 @@ def test_embedding_model_sends_no_window():
 def test_unknown_model_degrades_instead_of_raising():
     """ml/ scripts can name a model directly; a missing entry must not break them."""
     assert models.get_num_ctx("some-model-we-have-never-heard-of") is None
+
+
+# -- DSPy ----------------------------------------------------------------------
+# DSPy reaches Ollama through LiteLLM, not utils/ollama_client, so it inherits
+# neither the shared socket timeout nor the model's window unless both are passed
+# explicitly. Three call sites did neither, which ran qwen2.5:3b at Ollama's 4096
+# default while every generate_stream path loaded it at 16,384 - two windows for one
+# model, so an ingest tore the runner down and reloaded it on every alternation.
+def test_make_lm_carries_the_models_window():
+    from retrieval.pipeline import make_lm
+
+    assert make_lm(models.MODEL_STANDARD).kwargs["num_ctx"] == NUM_CTX_STANDARD
+    assert make_lm(models.MODEL_FAST).kwargs["num_ctx"] == NUM_CTX_FAST
+
+
+def test_make_lm_carries_the_shared_timeout():
+    from config.settings import OLLAMA_TIMEOUT_SECONDS
+    from retrieval.pipeline import make_lm
+
+    assert make_lm(models.MODEL_FAST).kwargs["timeout"] == OLLAMA_TIMEOUT_SECONDS
+
+
+def test_no_call_site_builds_a_bare_dspy_lm():
+    """Every dspy.LM must come from make_lm, or it silently runs at Ollama's 4096."""
+    import pathlib
+
+    offenders = []
+    for path in pathlib.Path(".").rglob("*.py"):
+        parts = path.parts
+        if ".venv" in parts or "tests" in parts:
+            continue
+        for i, line in enumerate(path.read_text().splitlines(), 1):
+            if "dspy.LM(" in line and path.as_posix() != "retrieval/pipeline.py":
+                offenders.append(f"{path}:{i}")
+    assert not offenders, f"bare dspy.LM outside make_lm: {offenders}"
