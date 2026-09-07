@@ -17,11 +17,25 @@ def main() -> int:
         return 1
 
     try:
-        markdown = anydoc.to_markdown(doc_path)
+        # ocr="reject" is anydoc's default, but pin it: "hosted" uploads the PDF to
+        # Firecrawl, and nothing in RAGbase may reach the network.
+        markdown = anydoc.to_markdown(doc_path, ocr="reject")
+    except anydoc.NeedsOcrError as e:
+        # Not a failure - the signal to route around anydoc. `pages` lists every page
+        # with no text layer, so the parent can tell a scan from one bad page in a book.
+        print(
+            json.dumps(
+                {
+                    "status": "ocr_required",
+                    "detail": str(e),
+                    "ocr_pages": len(e.pages),
+                    "page_count": e.page_count,
+                }
+            )
+        )
+        return 0
     except anydoc.UnsupportedError as e:
-        # "OCR is required" is the signal to use the VLM path, not a failure
-        status = "ocr_required" if "OCR is required" in str(e) else "unsupported"
-        print(json.dumps({"status": status, "detail": str(e)}))
+        print(json.dumps({"status": "unsupported", "detail": str(e)}))
         return 0
     except anydoc.EncryptedError as e:
         print(json.dumps({"status": "encrypted", "detail": str(e)}))

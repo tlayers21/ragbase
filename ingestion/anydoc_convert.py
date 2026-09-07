@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from config.logging import setup_logging
-from config.settings import PDF_ANYDOC_TIMEOUT_SECONDS
+from config.settings import PDF_ANYDOC_OCR_PAGE_RATIO, PDF_ANYDOC_TIMEOUT_SECONDS
 
 logger = setup_logging(__name__)
 
@@ -20,11 +20,25 @@ STATUS_OCR_REQUIRED = "ocr_required"
 
 @dataclass
 class AnydocResult:
-    """Outcome of one conversion attempt. `markdown` is set only when ok."""
+    """Outcome of one conversion attempt. `markdown` is set only when ok.
+
+    `ocr_pages`/`page_count` are set only when `needs_ocr`, and say how much of the
+    document lacks a text layer - one scanned page in a book routes differently from a
+    scan of a whole book.
+    """
 
     status: str
     markdown: str = ""
     detail: str = ""
+    ocr_pages: int = 0
+    page_count: int = 0
+
+    @property
+    def mostly_needs_ocr(self) -> bool:
+        """True when enough of the document lacks text to treat the whole file as scanned."""
+        if not self.needs_ocr or self.page_count <= 0:
+            return True
+        return self.ocr_pages / self.page_count >= PDF_ANYDOC_OCR_PAGE_RATIO
 
     @property
     def ok(self) -> bool:
@@ -77,7 +91,12 @@ def to_markdown(source_path: str | Path, source_name: str) -> AnydocResult:
             logger.info(
                 f"anydoc could not convert '{source_name}' ({status}): {verdict.get('detail', '')}"
             )
-            return AnydocResult(status=status, detail=verdict.get("detail", ""))
+            return AnydocResult(
+                status=status,
+                detail=verdict.get("detail", ""),
+                ocr_pages=verdict.get("ocr_pages", 0),
+                page_count=verdict.get("page_count", 0),
+            )
 
         with open(out_path, "r", encoding="utf-8") as f:
             markdown = f.read()

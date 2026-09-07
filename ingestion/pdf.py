@@ -73,8 +73,22 @@ class PdfIngestor(BaseIngestor):
 
         if result.needs_ocr:
             # anydoc inspects every page, so trust it over the sampled probe
-            logger.info(f"anydoc reports '{source_name}' needs OCR, switching to VLM mode")
-            return self._extract_handwritten(source_path, source_name)
+            if result.mostly_needs_ocr:
+                logger.info(
+                    f"anydoc reports '{source_name}' needs OCR "
+                    f"({result.ocr_pages}/{result.page_count} pages), switching to VLM mode"
+                )
+                return self._extract_handwritten(source_path, source_name)
+
+            # A typed document with a few scanned pages. anydoc refuses the whole file
+            # rather than dropping those pages, and transcribing hundreds of typed pages
+            # through the VLM would take hours - Docling reads the text layer and OCRs
+            # only what is missing.
+            logger.info(
+                f"'{source_name}' is typed except for {result.ocr_pages}/{result.page_count} "
+                f"pages, using Docling so the text layer is kept"
+            )
+            return self._extract_with_docling(source_path, source_name)
 
         logger.warning(
             f"anydoc failed on '{source_name}' ({result.status}: {result.detail}), "
