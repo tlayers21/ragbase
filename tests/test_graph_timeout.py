@@ -11,12 +11,21 @@ tested here is the half that timeout is not enough on its own to fix: 155 chunks
 failing one at a time would still hold the worker for hours, so a run of failures
 has to abort the build. The distinction between "the model is gone" and "this one
 chunk produced junk" is the whole design, so both directions are asserted.
+
+A second wedge, with the same symptom and a different cause, is guarded at the bottom:
+that transport timeout is an httpx timeout, so on a *streaming* call it bounds the gap
+between tokens rather than the call. A model that degenerates into a repetition loop
+streams steadily and never trips it, which is why extraction also caps num_predict.
 """
 
 import pytest
 
 import retrieval.graph as graph
-from config.settings import GRAPH_MAX_CONSECUTIVE_FAILURES
+from config.settings import (
+    ENTITY_EXTRACTION_MAX_TOKENS,
+    GRAPH_MAX_CONSECUTIVE_FAILURES,
+    NUM_CTX_FAST,
+)
 
 
 @pytest.fixture
@@ -39,7 +48,7 @@ def test_transport_failures_abort_the_build(tmp_graph_db, monkeypatch):
     """
     calls = []
 
-    def dead_ollama(prompt, model=None):
+    def dead_ollama(prompt, model=None, options=None):
         calls.append(prompt)
         raise TimeoutError("read timed out")
 
@@ -62,7 +71,7 @@ def test_unparseable_output_skips_only_that_chunk(tmp_graph_db, monkeypatch):
     """
     calls = []
 
-    def junk_ollama(prompt, model=None):
+    def junk_ollama(prompt, model=None, options=None):
         calls.append(prompt)
         return iter(["not json at all"])
 
@@ -83,7 +92,7 @@ def test_recovered_call_resets_the_failure_run(tmp_graph_db, monkeypatch):
     """
     calls = []
 
-    def flaky_ollama(prompt, model=None):
+    def flaky_ollama(prompt, model=None, options=None):
         calls.append(prompt)
         # Fail every other call: never GRAPH_MAX_CONSECUTIVE_FAILURES in a row.
         if len(calls) % 2 == 1:
@@ -97,3 +106,28 @@ def test_recovered_call_resets_the_failure_run(tmp_graph_db, monkeypatch):
     )
 
     assert len(calls) == 12
+
+
+def test_extraction_caps_its_own_output_length(tmp_graph_db, monkeypatch):
+    """The socket timeout cannot bound a streaming call, so num_predict has to.
+
+    OLLAMA_TIMEOUT_SECONDS is an httpx timeout, which on a stream measures the gap between
+    tokens and resets on every one. A model that degenerated into a repetition loop emitted
+    steadily at 23 tokens a second, never tripped it, and held the only ingestion worker for
+    30 minutes. num_predict is the bound that actually applies.
+
+    The window is asserted alongside it because generate_stream replaces its default options
+    wholesale: passing num_predict on its own would drop num_ctx and load a second runner for
+    the same model at Ollama's 4096.
+    """
+    seen = {}
+
+    def recording_ollama(prompt, model=None, options=None):
+        seen["options"] = options
+        yield '{"entities": [], "relationships": []}'
+
+    monkeypatch.setattr(graph, "generate_stream", recording_ollama)
+    graph.extract_entities("some chunk text", "src")
+
+    assert seen["options"]["num_predict"] == ENTITY_EXTRACTION_MAX_TOKENS
+    assert seen["options"]["num_ctx"] == NUM_CTX_FAST
