@@ -1,5 +1,13 @@
 import { DEFAULT_API_URL } from "@/lib/config";
-import type { AttachmentType, HealthStatus, SourceSummary, IngestionStatus } from "@/types";
+import type {
+  AnalysisResult,
+  AnalysisStatus,
+  AttachmentType,
+  ChunkDetail,
+  HealthStatus,
+  SourceSummary,
+  IngestionStatus,
+} from "@/types";
 
 // Read runtime overrides from localStorage (set on the settings page)
 function getBaseUrl(): string {
@@ -153,6 +161,99 @@ export async function deleteSource(source: string): Promise<void> {
     method: "DELETE",
   });
   if (!res.ok) throw new Error(`deleteSource: ${res.status}`);
+}
+
+/**
+ * FastAPI's `detail` string, or a fallback.
+ *
+ * Worth the extra parse for the analysis endpoints specifically: they answer 409
+ * for two entirely different reasons - the source is still ingesting, or another
+ * check already holds the single run slot - and only `detail` tells them apart.
+ */
+async function errorDetail(res: Response, fallback: string): Promise<string> {
+  try {
+    const body = await res.json();
+    return typeof body?.detail === "string" ? body.detail : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+// -- Analysis -----------------------------------------------------------------
+
+/** Every chunk of a source with its flag and contradiction metadata. 409 while ingesting. */
+export async function fetchSourceChunks(
+  source: string,
+  signal?: AbortSignal
+): Promise<ChunkDetail[]> {
+  const res = await fetch(`${getBaseUrl()}/documents/${encodeURIComponent(source)}`, { signal });
+  if (!res.ok) throw new Error(await errorDetail(res, `fetchSourceChunks: ${res.status}`));
+  return res.json();
+}
+
+/**
+ * The analysis run in flight, or null.
+ *
+ * `cache: "no-store"` for the same reason as fetchHealth: this is polled, and a
+ * cached response would freeze the progress bar at whichever chunk it first saw.
+ */
+export async function fetchAnalysisStatus(): Promise<AnalysisStatus> {
+  const res = await fetch(`${getBaseUrl()}/documents/analysis/status`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`fetchAnalysisStatus: ${res.status}`);
+  return res.json();
+}
+
+/**
+ * Ask the run over `source` to stop after its current chunk.
+ *
+ * A 404 means nothing matched, which is not an error worth surfacing: the run
+ * finishing on its own between the click and this request looks exactly the same.
+ */
+export async function cancelAnalysis(source: string): Promise<void> {
+  const res = await fetch(
+    `${getBaseUrl()}/documents/${encodeURIComponent(source)}/analysis/cancel`,
+    { method: "POST" }
+  );
+  if (!res.ok && res.status !== 404) throw new Error(`cancelAnalysis: ${res.status}`);
+}
+
+/**
+ * Run a check over one source, resolving only when it finishes.
+ *
+ * **This request stays open for minutes** - one model call per chunk, five per
+ * chunk for contradictions - which is why the run publishes progress separately
+ * through fetchAnalysisStatus(). Deliberately not given an AbortSignal: aborting
+ * the fetch abandons the response while the backend keeps working, so stopping
+ * a check goes through cancelAnalysis() instead.
+ */
+async function runCheck(source: string, kind: "facts" | "contradictions"): Promise<AnalysisResult> {
+  const path = kind === "facts" ? "check_facts" : "check_contradictions";
+  const res = await fetch(`${getBaseUrl()}/documents/${encodeURIComponent(source)}/${path}`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, `${path}: ${res.status}`));
+
+  const data = await res.json();
+  return {
+    source,
+    kind,
+    // The two endpoints name their count differently, so it is normalised here
+    // rather than in every component that wants to render "N found"
+    found: kind === "facts" ? data.flagged : data.contradictions_found,
+    checked: data.checked,
+    total: data.total,
+    cancelled: Boolean(data.cancelled),
+  };
+}
+
+/** Fact-check every chunk against the model's general knowledge. Minutes-long. */
+export async function checkSourceFacts(source: string): Promise<AnalysisResult> {
+  return runCheck(source, "facts");
+}
+
+/** Look for chunks that contradict other ingested sources. Slower than the fact check. */
+export async function checkSourceContradictions(source: string): Promise<AnalysisResult> {
+  return runCheck(source, "contradictions");
 }
 
 // -- Query --------------------------------------------------------------------

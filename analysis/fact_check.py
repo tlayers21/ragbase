@@ -1,4 +1,5 @@
 from analysis.common import parse_verdict, update_chunk_metadata
+from analysis.progress import AnalysisRun
 from config.logging import setup_logging
 from config.models import get_model
 from utils.chromadb_client import get_source_chunks
@@ -35,10 +36,16 @@ Be conservative - only flag clear factual errors, not opinions or uncertain clai
         return False, "Fact check could not be completed."
 
 
-def check_source_facts(source: str, user_id: str) -> list[dict]:
+def check_source_facts(source: str, user_id: str, run: AnalysisRun | None = None) -> list[dict]:
     """Fact-check all chunks for a source, storing results back into ChromaDB.
 
-    Returns a list of results with a verdict and reason per chunk.
+    One model call per chunk, so this runs for minutes on a large source. Pass a
+    `run` to publish progress and to make it cancellable; without one it simply
+    runs to completion, which is what the tests and any script want.
+
+    Returns a list of results with a verdict and reason per chunk. A cancelled
+    run returns the chunks it got through, not an error - the metadata it wrote
+    is already in ChromaDB either way.
     """
     chunks = get_source_chunks(source, user_id)
 
@@ -46,12 +53,24 @@ def check_source_facts(source: str, user_id: str) -> list[dict]:
         logger.warning(f"No chunks found for source '{source}'")
         return []
 
+    if run:
+        run.begin(len(chunks))
+
     flagged_count = 0
     output = []
 
-    for doc, meta in chunks:
+    for position, (doc, meta) in enumerate(chunks, start=1):
+        # Checked between calls, so a cancel lands within one chunk rather than at once
+        if run and run.cancelled:
+            logger.info(
+                f"Fact check for '{source}' cancelled after {position - 1}/{len(chunks)} chunks"
+            )
+            break
+
         chunk_index = meta.get("chunk_index", 0)
-        logger.info(f"Fact checking chunk {chunk_index + 1}/{len(chunks)} of '{source}'...")
+        logger.info(f"Fact checking chunk {position}/{len(chunks)} of '{source}'...")
+        if run:
+            run.advance(position, flagged_count)
 
         is_flagged, reason = check_chunk_facts(doc)
 
@@ -69,5 +88,11 @@ def check_source_facts(source: str, user_id: str) -> list[dict]:
             }
         )
 
-    logger.info(f"Fact check complete for '{source}': {flagged_count}/{len(chunks)} chunks flagged")
+    if run:
+        run.advance(len(output), flagged_count)
+
+    logger.info(
+        f"Fact check finished for '{source}': {flagged_count} flagged "
+        f"across {len(output)}/{len(chunks)} chunks checked"
+    )
     return output

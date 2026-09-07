@@ -21,7 +21,7 @@ Opens on `localhost:3000` and expects the FastAPI backend running at `localhost:
 ```bash
 npx tsc --noEmit   # type-check
 npm run build      # production build - required to verify PDF rendering, dynamic
-                    # imports, and theming; the dev server bundles these differently
+                   # imports, and theming; the dev server bundles these differently
 ```
 
 ## Notes

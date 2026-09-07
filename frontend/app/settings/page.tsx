@@ -152,12 +152,10 @@ export default function SettingsPage() {
             <span className="font-medium text-foreground-muted">
               Recommended: {DEFAULT_RELEVANCE_PERCENT}%
             </span>{" "}
-            - a deliberately conservative floor, so low-confidence chunks are never fed to
-            the model. Much lower and it cited passages the reranker scored at a fraction of
-            a percent; at the model’s own boundary (56%) too many questions fell through to
-            answering with no citations at all. Raise it to cite only strong matches; 0%
-            passes through everything retrieval returned. Applies to your next question - no
-            restart needed.
+            - the best balance in testing. Lower it to cite more, at the cost of weak matches
+            the reranker barely scored reaching the model; 0% passes through everything
+            retrieval returned. Raise it to cite only strong matches, at the cost of more
+            questions being answered with no citations at all.
           </p>
         </div>
 

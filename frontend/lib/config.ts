@@ -7,6 +7,10 @@ export const HEALTH_POLL_INTERVAL_MS = 1000;
 // Switches the gate's copy only, never unblocks it - a cold start.sh is slow
 export const HEALTH_STALL_AFTER_MS = 60_000;
 
+// An analysis check is one model call per chunk, so a chunk boundary is seconds
+// apart at best - polling faster than this only adds requests to a busy backend
+export const ANALYSIS_POLL_INTERVAL_MS = 1500;
+
 // RERANKER_MIN_SCORE on the UI's relevance scale - the slider's default and marker
 export const DEFAULT_RELEVANCE_PERCENT = 44;
 

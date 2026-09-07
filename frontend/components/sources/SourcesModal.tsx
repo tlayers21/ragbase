@@ -12,6 +12,7 @@ import {
   Hourglass,
   GitBranch,
   BookOpen,
+  ShieldCheck,
 } from "lucide-react";
 import {
   fetchSources,
@@ -23,6 +24,8 @@ import {
 } from "@/lib/api";
 import { cn, sourceTypeFromExt } from "@/lib/utils";
 import { isActiveStatus } from "@/hooks/useIngestion";
+import { useAnalysis } from "@/hooks/useAnalysis";
+import { AnalysisPane } from "@/components/sources/AnalysisPane";
 import type { IngestionJob, SourceSummary } from "@/types";
 
 // Lazy-load react-pdf to keep the main bundle light (PDF.js is large)
@@ -347,6 +350,9 @@ interface SourceCardProps {
   onConfirmDelete: (source: string) => void;
   onCancelConfirm: () => void;
   onExplain: (source: string) => void;
+  onAnalyze: (source: SourceSummary) => void;
+  /** This source is the one holding the analysis slot right now. */
+  isAnalysisRunning: boolean;
 }
 
 function SourceCard({
@@ -357,6 +363,8 @@ function SourceCard({
   onConfirmDelete,
   onCancelConfirm,
   onExplain,
+  onAnalyze,
+  isAnalysisRunning,
 }: SourceCardProps) {
   return (
     <div
@@ -387,6 +395,20 @@ function SourceCard({
           </div>
         ) : (
           <div className="flex items-center gap-0.5 flex-shrink-0">
+            <button
+              onClick={(e) => { e.stopPropagation(); onAnalyze(source); }}
+              className={cn(
+                "rounded p-0.5 transition-all",
+                // Kept visible while a check runs, so the way back to the progress
+                // bar does not depend on knowing which card to hover
+                isAnalysisRunning
+                  ? "text-blue-500"
+                  : "opacity-0 group-hover:opacity-100 text-foreground-muted hover:text-foreground"
+              )}
+              title="Fact check and contradiction check"
+            >
+              <ShieldCheck className="h-3.5 w-3.5" />
+            </button>
             <button
               onClick={(e) => { e.stopPropagation(); onExplain(source.source); }}
               className="opacity-0 group-hover:opacity-100 rounded p-0.5 text-foreground-muted hover:text-foreground transition-all"
@@ -424,6 +446,9 @@ function SourceCard({
           {source.chunk_count} chunk{source.chunk_count !== 1 ? "s" : ""}
           {source.flagged_count > 0 && (
             <span className="ml-2 text-amber-500">{source.flagged_count} flagged</span>
+          )}
+          {source.contradiction_count > 0 && (
+            <span className="ml-2 text-red-500">{source.contradiction_count} conflicting</span>
           )}
         </p>
       </div>
@@ -561,10 +586,34 @@ export function SourcesModal({
   const [query, setQuery] = useState("");
   const [confirming, setConfirming] = useState<string | null>(null);
   const [preview, setPreview] = useState<SourceSummary | null>(null);
+  // Held by name, not by object: a check rewrites flagged_count and the refetch
+  // that follows replaces the object, and a captured copy would show stale counts
+  const [analysisSource, setAnalysisSource] = useState<string | null>(null);
+  const [analysisTick, setAnalysisTick] = useState(0);
 
   const activeJobs = useMemo(
     () => (jobs ?? []).filter((j) => isActiveStatus(j.status)),
     [jobs]
+  );
+
+  // A failed refresh keeps the list we have - it must never empty the grid
+  const refreshSourceList = useCallback(() => {
+    fetchSources().then(setSources).catch(() => {});
+  }, []);
+
+  const handleAnalysisFinished = useCallback(() => {
+    // The counts on every card come from chunk metadata the run just rewrote
+    refreshSourceList();
+    onSourcesChanged?.();
+    setAnalysisTick((n) => n + 1);
+  }, [refreshSourceList, onSourcesChanged]);
+
+  const analysis = useAnalysis(handleAnalysisFinished);
+  const { adopt: adoptAnalysis } = analysis;
+
+  const analysisTarget = useMemo(
+    () => sources.find((s) => s.source === analysisSource) ?? null,
+    [sources, analysisSource]
   );
 
   // Reset the view every time the modal opens
@@ -573,21 +622,21 @@ export function SourcesModal({
     setIsLoadingSources(true);
     setPreview(null);
     setConfirming(null);
+    setAnalysisSource(null);
     fetchSources()
       .then(setSources)
       .catch(() => setSources([]))
       .finally(() => setIsLoadingSources(false));
-  }, [isOpen]);
+    // A check started before a reload is still running server side, and this is
+    // the only way this tab learns about it
+    void adoptAnalysis();
+  }, [isOpen, adoptAnalysis]);
 
   // Separate from the effect above, which would close an open preview on every refetch
   useEffect(() => {
     if (!isOpen) return;
-    fetchSources()
-      .then(setSources)
-      .catch(() => {
-        // Keep the list we have - a failed refresh must not empty the grid
-      });
-  }, [isOpen, activeJobs.length]);
+    refreshSourceList();
+  }, [isOpen, activeJobs.length, refreshSourceList]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -613,6 +662,8 @@ export function SourcesModal({
         await apiDeleteSource(source);
         setSources((prev) => prev.filter((s) => s.source !== source));
         setConfirming(null);
+        // Otherwise the analysis view stays open over a source that no longer exists
+        setAnalysisSource((prev) => (prev === source ? null : prev));
         // Hidden by source name, because DELETE returns no job id to hide the row by
         onJobsInvalidated?.(source);
         onSourcesChanged?.();
@@ -627,6 +678,7 @@ export function SourcesModal({
     setConfirming(null);
     setQuery("");
     setPreview(null);
+    setAnalysisSource(null);
     onClose();
   }, [onClose]);
 
@@ -642,7 +694,30 @@ export function SourcesModal({
 
       {/* Panel */}
       <div className="relative z-10 w-full max-w-xl mx-4 rounded-xl border border-border bg-background shadow-2xl flex flex-col max-h-[80vh]">
-        {preview ? (
+        {analysisTarget ? (
+          // -- Analysis mode -------------------------------------------------
+          // Ahead of preview in the chain because both are entered from the same
+          // card, and a run in flight is the thing the user came back to see
+          <>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
+              <h2 className="text-sm font-semibold text-foreground">Analysis</h2>
+              <button
+                onClick={handleClose}
+                className="rounded p-1 text-foreground-muted hover:text-foreground transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-hidden">
+              <AnalysisPane
+                source={analysisTarget}
+                analysis={analysis}
+                reloadToken={analysisTick}
+                onBack={() => setAnalysisSource(null)}
+              />
+            </div>
+          </>
+        ) : preview ? (
           // -- Preview mode --------------------------------------------------
           <>
             <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
@@ -733,6 +808,8 @@ export function SourcesModal({
                       onConfirmDelete={handleConfirmDelete}
                       onCancelConfirm={() => setConfirming(null)}
                       onExplain={handleExplain}
+                      onAnalyze={(s) => setAnalysisSource(s.source)}
+                      isAnalysisRunning={analysis.run?.source === source.source}
                     />
                   ))}
                 </div>

@@ -14,6 +14,53 @@ export interface SourceSummary {
   file_ext: string;
 }
 
+/** One chunk of a source, with whatever the two analysis checks wrote onto it.
+ *  `flagged`/`contradiction` are false and the reasons empty until a check runs -
+ *  there is no "not checked yet" state in the metadata, so an all-false source
+ *  and an unchecked one look identical here. The card's counts say which. */
+export interface ChunkDetail {
+  chunk_index: number;
+  text: string;
+  flagged: boolean;
+  flag_reason: string;
+  contradiction: boolean;
+  contradiction_reason: string;
+  contradicts_source: string;
+}
+
+/** Which of the two per-source checks a run is: general factual accuracy, or
+ *  disagreement against every other ingested source. */
+export type AnalysisKind = "facts" | "contradictions";
+
+/** The single analysis run in flight, process-wide - only one can hold the slot,
+ *  because both checks drive the same Ollama that answers queries. */
+export interface AnalysisRun {
+  source: string;
+  kind: AnalysisKind;
+  /** Chunks of the source, not model calls: contradictions makes up to five per chunk. */
+  current: number;
+  total: number;
+  /** Flagged chunks or contradictions found so far, whichever check this is. */
+  found: number;
+  cancelled: boolean;
+  elapsed_seconds: number;
+}
+
+export interface AnalysisStatus {
+  run: AnalysisRun | null;
+}
+
+/** What a finished check reports back. `checked` is below `total` only when the
+ *  run was cancelled part way, and whatever it wrote before that stays. */
+export interface AnalysisResult {
+  source: string;
+  kind: AnalysisKind;
+  found: number;
+  checked: number;
+  total: number;
+  cancelled: boolean;
+}
+
 /** The status lifecycle of an ingestion job, in order, where `done` means
  *  extraction and the graph build both finished. A failure is the literal
  *  string `error: <detail>`, which consumers prefix-match. */
