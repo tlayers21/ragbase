@@ -12,11 +12,12 @@ from config.models import get_model
 from config.paths import KNOWLEDGE_GRAPH_DB_PATH
 from config.runtime import is_query_in_progress
 from config.settings import (
+    ENTITY_EXTRACTION_MAX_TOKENS,
     GRAPH_MAX_CONSECUTIVE_FAILURES,
     GRAPH_YIELD_MAX_SECONDS,
     GRAPH_YIELD_SLEEP_SECONDS,
 )
-from utils.ollama_client import generate_stream
+from utils.ollama_client import ctx_options, generate_stream
 
 logger = setup_logging(__name__)
 
@@ -226,8 +227,13 @@ Respond with valid JSON only in this exact format:
 Only include clear factual entities and relationships. Output JSON only, no explanation."""
 
     # Split so a wedged model propagates while one chunk's bad output is swallowed
+    model = get_model("entity_extraction")
+    # num_predict merged into the model's own context options rather than passed alone:
+    # generate_stream replaces its default options wholesale, so passing only num_predict
+    # would drop num_ctx and load a second runner for the same model at Ollama's 4096.
+    options = {**(ctx_options(model) or {}), "num_predict": ENTITY_EXTRACTION_MAX_TOKENS}
     try:
-        raw = "".join(generate_stream(prompt, model=get_model("entity_extraction")))
+        raw = "".join(generate_stream(prompt, model=model, options=options))
     except Exception as e:
         raise EntityExtractionUnavailable(f"Entity extraction call failed: {e}") from e
 

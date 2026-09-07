@@ -1,7 +1,14 @@
 from rank_bm25 import BM25Okapi
 
 from config.logging import setup_logging
-from config.settings import MAX_FINAL_RESULTS, RRF_K, SUMMARY_DISTANCE_THRESHOLD, TOP_K_CANDIDATES
+from config.settings import (
+    BM25_WEIGHT,
+    MAX_FINAL_RESULTS,
+    RRF_K,
+    SUMMARY_DISTANCE_THRESHOLD,
+    SUMMARY_MAX_SOURCES,
+    TOP_K_CANDIDATES,
+)
 from ingestion.queue import active_sources
 from retrieval.embed import embed
 from utils.chromadb_client import get_collection, get_summary_collection
@@ -44,20 +51,7 @@ def search(
     if not docs:
         return [], []
 
-    # BM25 re-scores the vector candidates only, not the full corpus
-    tokenized = [doc.lower().split() for doc in docs]
-    bm25 = BM25Okapi(tokenized)
-    bm25_scores = bm25.get_scores(query.lower().split())
-
-    # RRF fusion
-    fused_scores = _rrf(
-        vector_ranks=list(range(len(docs))),
-        bm25_ranks=_rank_indices(bm25_scores),
-    )
-
-    # Sort by fused score and return top n_results
-    sorted_indices = sorted(fused_scores.keys(), key=lambda i: fused_scores[i], reverse=True)
-    top_indices = sorted_indices[:n_results]
+    top_indices = fuse(query, docs)[:n_results]
 
     return [docs[i] for i in top_indices], [metas[i] for i in top_indices]
 
@@ -78,7 +72,7 @@ def search_summaries(
     if total_sources == 0:
         return []
 
-    n_results = min(max(3, total_sources // 3), 8)
+    n_results = min(max(3, total_sources // 3), SUMMARY_MAX_SOURCES)
 
     results = collection.query(
         query_embeddings=[query_embedding],
@@ -108,6 +102,20 @@ def search_summaries(
 
 
 # -- Filter and fusion helpers -----------------------------------------------
+def fuse(query: str, docs: list[str]) -> list[int]:
+    """Indices into `docs`, reordered best-first by Reciprocal Rank Fusion.
+    """
+    tokenized = [doc.lower().split() for doc in docs]
+    bm25 = BM25Okapi(tokenized)
+    bm25_scores = bm25.get_scores(query.lower().split())
+
+    fused_scores = _rrf(
+        vector_ranks=list(range(len(docs))),
+        bm25_ranks=_rank_indices(bm25_scores),
+    )
+    return sorted(fused_scores.keys(), key=lambda i: fused_scores[i], reverse=True)
+
+
 def _exclude_clause(excluded: set[str] | None) -> dict | None:
     """A `$nin` clause hiding sources whose ingestion job has not finished, or None.
 
@@ -139,16 +147,24 @@ def _build_filter(
     return clauses[0] if len(clauses) == 1 else {"$and": clauses}
 
 
-def _rrf(vector_ranks: list[int], bm25_ranks: list[int], k: int = RRF_K) -> dict:
+def _rrf(
+    vector_ranks: list[int],
+    bm25_ranks: list[int],
+    k: int = RRF_K,
+    bm25_weight: float = BM25_WEIGHT,
+) -> dict:
     """
     Reciprocal Rank Fusion - combine two ranked lists into one score per item.
     Higher score = more relevant.
+
+    Only the ratio of the two weights changes the ordering, so the vector arm stays at
+    1.0 and `bm25_weight` alone sets how much the lexical arm may move a chunk.
     """
     scores = {}
     for rank, idx in enumerate(vector_ranks):
         scores[idx] = scores.get(idx, 0) + 1 / (k + rank + 1)
     for rank, idx in enumerate(bm25_ranks):
-        scores[idx] = scores.get(idx, 0) + 1 / (k + rank + 1)
+        scores[idx] = scores.get(idx, 0) + bm25_weight / (k + rank + 1)
     return scores
 
 
