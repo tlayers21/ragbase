@@ -7,20 +7,26 @@
 
 ## What it does
 
-RAGbase ingests your documents - notes, PDFs (typed or handwritten), images,
-videos, and YouTube links - and lets you chat with all of them at once. Answers
-are grounded in your own content with source citations, so you can see exactly
-where every claim came from. Everything runs locally through Ollama: your
-documents and questions never leave your machine.
+RAGbase ingests your documents - notes, PDFs (typed or handwritten), Word and
+PowerPoint files, spreadsheets, e-books, images, videos, and YouTube links - and
+lets you chat with all of them at once. Answers are grounded in your own content
+with source citations, so you can see exactly where every claim came from.
+Everything runs locally through Ollama: your documents and questions never leave
+your machine.
 
 ## Features
 
 - PDF ingestion (typed and handwritten via VLM transcription)
+- Word, PowerPoint, Excel, OpenDocument, RTF, CSV and EPUB ingestion
 - Image, video, YouTube, and plain text ingestion
-- Hybrid BM25 + vector search with cross-encoder reranking
+- Hybrid keyword + semantic search, so exact terms like error codes still match
 - Knowledge graph for cross-document concept linking
-- Streaming answers with source citations
+- Streaming answers with source citations, and a relevance floor you can tune
 - "Explain in depth" - a whole-document walkthrough of any source, on demand
+- Fact checking and contradiction detection -- ask RAGbase to grade a document
+  against the model's general knowledge, or against everything else you have
+  ingested, and read the findings chunk by chunk
+- Direct chat - deselect every source to use it as a plain local chat client
 - Multi-turn chat with context window management
 - Clipboard paste - images and long text automatically become attachments
 - Dark/light mode, PDF preview, drag-and-drop ingestion
@@ -38,7 +44,7 @@ documents and questions never leave your machine.
 `install.sh` checks for all of these and stops if any is missing. For the last two:
 
 ```bash
-brew install ffmpeg poppler          # Mac
+brew install ffmpeg poppler # Mac
 sudo apt install ffmpeg poppler-utils # Debian/Ubuntu
 ```
 
@@ -127,16 +133,19 @@ runs locally through Ollama. No Docker, no internet required after setup.
 
 ## Model stack
 
-| Task | Model |
-|------|-------|
-| Answer generation | qwen3 (8B) |
-| Summarize, entity extraction, text cleanup | qwen2.5:3b |
-| Vision - handwriting, diagrams, images | qwen2.5vl |
-| Embeddings | bge-m3 |
-| Reranking | BAAI/bge-reranker-v2-m3 |
-| Audio transcription | Whisper base |
-| OCR (standalone images) | PaddleOCR |
-| OCR (typed PDFs) | RapidOCR via Docling |
+| Task | Model | Size |
+|------|-------|------|
+| Answer generation | `qwen3` | 5.2 GB |
+| Summaries, titles, entity extraction, text cleanup, fact checking, contradiction detection | `qwen2.5:3b` | 1.9 GB |
+| Vision - handwriting, diagrams, images | `qwen2.5vl` | 6.0 GB |
+| Embeddings | `bge-m3` | 1.2 GB |
+| Reranking | `BAAI/bge-reranker-v2-m3` | ~2 GB |
+| Audio transcription | Whisper base | ~150 MB |
+| OCR (standalone images) | PaddleOCR | small |
+| OCR (scanned PDF fallback) | RapidOCR via Docling | small |
+
+Typed PDFs and office formats use no OCR and no model at all - they go through
+`anydoc`, a pure-Rust text converter, which is why they finish in seconds.
 
 **Total model footprint: ~17GB** - ~14GB of Ollama models pulled by `install.sh`, plus
 the reranker (~2GB) and Whisper (~150MB), which download on first use.
@@ -152,11 +161,14 @@ Minimum recommended: 16GB RAM. 24GB+ for comfortable use with all models loaded.
 
 ## Privacy
 
-RAGbase sends anonymous usage telemetry by default: query latency, source
-counts, and a random device ID (e.g. `dev_a3f9b2c1`) that cannot be linked to
-you. Your queries, documents, and personal data are **never** sent - they never
-leave your machine. You can disable telemetry entirely with the toggle in
-**Settings -> Send anonymous usage telemetry**.
+**RAGbase sends nothing anywhere.** Your queries, documents, and personal data
+never leave your machine.
+
+There is an optional telemetry hook in the code, which the author uses to collect
+query latency and source counts from their own machines. It needs a collection
+endpoint set in a local `.env` file, which no clone has, so it is inert: nothing
+is sent and no request is made. **Settings -> Send anonymous usage telemetry** is
+a second switch over the same thing.
 
 ## Resetting
 
@@ -179,9 +191,10 @@ ragbase/
 ├── analysis/      Fact checking and contradiction detection
 ├── api/           FastAPI routers (ingest, query, documents, settings, ...)
 ├── ml/            Eval and fine-tuning scripts
+├── metrics/       Offline retrieval eval harness (recall@5, MRR)
 ├── utils/         ChromaDB client, Ollama client, cache, telemetry
 ├── frontend/      Next.js app (TypeScript, Tailwind)
-├── scripts/       install.sh, start.sh, reset_all.sh, status.sh, metrics.py
+├── scripts/       install.sh, start.sh, reset_all.sh, status.sh
 └── data/          Local data: ChromaDB, cache, source files (gitignored)
 ```
 

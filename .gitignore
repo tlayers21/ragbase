@@ -4,6 +4,7 @@ __pycache__/
 *.pyo
 .ruff_cache/
 .pytest_cache/
+.env
 # Logs
 logs/
 # Data (generated/personal, not source code)
@@ -46,3 +47,5 @@ scripts/metrics.py
 .vscode/
 .github/
 docs/CODEBASE_EXPLAINED.md
+# Eval harness output
+metrics/results/

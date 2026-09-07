@@ -1,0 +1,14 @@
+[
+  {
+    "question": "What do you call a group of people who trade knowledge around a shared job or profession?",
+    "gold": [["course_notes", 0]],
+    "verified": false,
+    "note": "Answer is 'community of practice'. The question avoids that phrase so BM25 cannot match it literally."
+  },
+  {
+    "question": "Which law applies when a hospital is handling patient records?",
+    "gold": [["course_notes", 4], ["course_notes", 5]],
+    "verified": false,
+    "note": "HIPAA. Two gold chunks because CHUNK_OVERLAP puts the answer across a boundary here."
+  }
+]
