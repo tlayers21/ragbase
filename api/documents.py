@@ -3,6 +3,7 @@ import asyncio
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from analysis import progress
 from analysis.contradiction import find_contradictions
 from analysis.fact_check import check_source_facts
 from api.guards import require_finished
@@ -27,6 +28,22 @@ class SourceSummary(BaseModel):
     file_ext: str = ""
     # Opening of chunk 0, shown where there is no previewable original on disk
     preview: str = ""
+
+
+class AnalysisRunStatus(BaseModel):
+    source: str
+    kind: str
+    # Chunks of the source, not model calls: the contradiction check makes up to
+    # five calls per chunk, and a bar moving by five would measure the wrong thing
+    current: int
+    total: int
+    found: int
+    cancelled: bool
+    elapsed_seconds: float
+
+
+class AnalysisStatus(BaseModel):
+    run: AnalysisRunStatus | None = None
 
 
 class ChunkDetail(BaseModel):
@@ -153,16 +170,57 @@ async def delete_document(source: str):
     return {"status": "ok", "deleted": deleted}
 
 
+@router.get("/analysis/status", response_model=AnalysisStatus)
+async def analysis_status():
+    """The analysis run in flight, or null.
+
+    One endpoint for the whole process rather than one per source, because only
+    one run can hold the slot at a time. Polled while a check runs, and read once
+    when the sources modal opens so a reload lands back on the running check
+    instead of showing an idle button over a busy backend.
+    """
+    run = progress.current()
+    return AnalysisStatus(run=AnalysisRunStatus(**run.snapshot()) if run else None)
+
+
+@router.post("/{source}/analysis/cancel")
+async def cancel_analysis(source: str):
+    """Ask the analysis run over `source` to stop after its current chunk.
+
+    404 covers both "nothing is running" and "the run belongs to another source":
+    a stale tab must not be able to stop a check started afterwards on a different
+    document. Whatever the run already wrote to ChromaDB stays.
+    """
+    if not await asyncio.to_thread(progress.cancel, source):
+        raise HTTPException(status_code=404, detail=f"No analysis running for '{source}'")
+    return {"status": "cancelling", "source": source}
+
+
 @router.post("/{source}/check_facts")
 async def check_facts(source: str):
     """Run the factual accuracy checker on a source, once it has finished ingesting."""
     # Gated - grading mid-extraction writes flags onto chunks the job may still delete
     await require_finished(source)
 
-    # One LLM call per chunk - minutes on a large source, all of it off the event loop
-    results = await asyncio.to_thread(check_source_facts, source, USER_ID)
+    try:
+        # One LLM call per chunk - minutes on a large source, all of it off the event
+        # loop, and holding the single analysis slot for the whole of it
+        with progress.run_for(source, "facts") as run:
+            results = await asyncio.to_thread(check_source_facts, source, USER_ID, run)
+            cancelled, total = run.cancelled, run.total
+    except progress.AnalysisBusy as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
     flagged = sum(1 for r in results if r["flagged"])
-    return {"status": "ok", "flagged": flagged, "total": len(results)}
+    return {
+        "status": "cancelled" if cancelled else "ok",
+        "flagged": flagged,
+        # `checked` is what this run got through, `total` what the source holds -
+        # equal unless the run was cancelled part way
+        "checked": len(results),
+        "total": total,
+        "cancelled": cancelled,
+    }
 
 
 @router.post("/{source}/check_contradictions")
@@ -171,6 +229,18 @@ async def check_contradictions(source: str):
     # Gated like check_facts, and this one writes onto both sides of a contradiction
     await require_finished(source)
 
-    # Same reasoning as check_facts: LLM calls plus ChromaDB reads, all synchronous
-    count = await asyncio.to_thread(find_contradictions, source, USER_ID)
-    return {"status": "ok", "contradictions_found": count}
+    try:
+        # Same reasoning as check_facts, and slower: up to five calls per chunk
+        with progress.run_for(source, "contradictions") as run:
+            count = await asyncio.to_thread(find_contradictions, source, USER_ID, run)
+            cancelled, checked, total = run.cancelled, run.current, run.total
+    except progress.AnalysisBusy as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+    return {
+        "status": "cancelled" if cancelled else "ok",
+        "contradictions_found": count,
+        "checked": checked,
+        "total": total,
+        "cancelled": cancelled,
+    }
