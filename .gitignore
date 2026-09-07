@@ -47,5 +47,6 @@ scripts/metrics.py
 .vscode/
 .github/
 docs/CODEBASE_EXPLAINED.md
-# Eval harness output
+# Eval harness
+metrics/query_set.json
 metrics/results/
